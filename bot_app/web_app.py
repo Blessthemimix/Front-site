@@ -14,7 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
 # Убрали точки перед названиями файлов для корректной работы на Render
-from config import Settings
+from .config import Settings
 from osu_client import OsuClient
 from rate_limiter import RateLimiter
 from verification import VerificationInput, compute_digit_value, extract_osu_identifier
