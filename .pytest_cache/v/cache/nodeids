@@ -1,0 +1,9 @@
+[
+  "tests/test_discord_helpers.py::test_flatten_role_ids",
+  "tests/test_osu_client.py::test_osu_client_caches_response",
+  "tests/test_verification.py::test_extract_identifier_from_url",
+  "tests/test_verification.py::test_last_digit_mode",
+  "tests/test_verification.py::test_rank_digit_count_matches_original_behavior",
+  "tests/test_verification.py::test_sum_digits_mod_mode",
+  "tests/test_web_flow.py::test_start_and_finalize_verification"
+]

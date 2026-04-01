@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "osu-discord-role-bot"
+version = "0.1.0"
+description = "Refactored Discord osu verification bot with FastAPI verification flow"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "discord.py>=2.4.0",
+  "fastapi>=0.115.0",
+  "python-multipart>=0.0.9",
+  "uvicorn[standard]>=0.30.0",
+  "httpx>=0.27.0",
+  "aiosqlite>=0.20.0",
+  "colorthief>=0.2.1",
+  "python-dotenv>=1.0.1",
+  "jinja2>=3.1.4"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "pytest-asyncio>=0.23.8",
+  "ruff>=0.5.0",
+  "black>=24.4.2"
+]
+
+[tool.setuptools]
+packages = ["bot_app"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+asyncio_mode = "auto"

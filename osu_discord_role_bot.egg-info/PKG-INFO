@@ -1,0 +1,140 @@
+Metadata-Version: 2.4
+Name: osu-discord-role-bot
+Version: 0.1.0
+Summary: Refactored Discord osu verification bot with FastAPI verification flow
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: discord.py>=2.4.0
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: uvicorn[standard]>=0.30.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: aiosqlite>=0.20.0
+Requires-Dist: colorthief>=0.2.1
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: jinja2>=3.1.4
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23.8; extra == "dev"
+Requires-Dist: ruff>=0.5.0; extra == "dev"
+Requires-Dist: black>=24.4.2; extra == "dev"
+
+# osu Discord Role Bot (Refactored)
+
+Async Discord bot + FastAPI verification web app for osu account verification and role assignment.
+
+## What this implements
+
+- Refactored codebase from one large script into modules:
+  - `bot_app/config.py` - env/config handling
+  - `bot_app/db.py` - sqlite schema init
+  - `bot_app/osu_client.py` - async osu API client + token/caching
+  - `bot_app/verification.py` - digit mapping logic
+  - `bot_app/discord_client.py` - Discord bot commands + assignment worker
+  - `bot_app/web_app.py` - FastAPI verification flow
+  - `bot_app/main_bot.py`, `bot_app/main_web.py` - process entrypoints
+- Verification flow with secure account linking:
+  1. User starts verification on web app with Discord ID + osu name/URL.
+  2. Web app returns:
+     - Discord link code
+     - profile token
+  3. User sends `/linkcode <code>` in Discord.
+  4. User places profile token in osu profile bio.
+  5. User calls finalize endpoint; app validates token and queues role assignment.
+  6. Bot worker consumes queue and assigns mapped role.
+- Secure internal callback endpoint:
+  - `POST /internal/role-assignment`
+  - protected by `X-Webhook-Secret`.
+
+## Verification behavior and compatibility
+
+The original script used:
+- role digit = **number of digits in global rank** (`len(str(global_rank))`)
+
+That behavior is preserved with:
+- `VERIFICATION_MODE=rank_digit_count` (default)
+
+Additional configurable modes:
+- `last_digit_of_userid`
+- `sum_of_digits_mod_X` (with `DIGIT_MODULUS`)
+
+## Environment setup
+
+1. Copy `.env.example` to `.env`.
+2. Fill required values:
+   - `DISCORD_BOT_TOKEN`
+   - `DISCORD_GUILD_ID`
+   - `OSU_CLIENT_ID`
+   - `OSU_CLIENT_SECRET`
+   - `WEBHOOK_SECRET`
+3. Copy `config/role_mapping.example.json` to `config/role_mapping.json` and edit role IDs.
+
+Example role mapping:
+```json
+{
+  "osu": { "4": 111111111111111111, "5": 222222222222222222 },
+  "mania": { "4": 333333333333333333 }
+}
+```
+
+## Local run (no Docker)
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e ".[dev]"
+```
+
+Run web app:
+```bash
+python run_web.py
+```
+
+Run bot (separate terminal):
+```bash
+python run_bot.py
+```
+
+## Docker run
+
+```bash
+docker compose up --build
+```
+
+Services:
+- Web: `http://localhost:8000`
+- Bot: background service in same compose stack
+
+## API summary
+
+- `GET /` - minimal HTML form
+- `POST /verify/start`
+  - body: `{ "discord_id": 123, "osu_identifier": "name-or-url" }`
+- `POST /verify/finalize`
+  - body: `{ "challenge_id": 1 }`
+- `POST /internal/role-assignment`
+  - header: `X-Webhook-Secret: <WEBHOOK_SECRET>`
+
+## Testing and linting
+
+```bash
+ruff check .
+black --check .
+pytest
+```
+
+## Security notes
+
+- No secrets are hardcoded; all sensitive values are env-based.
+- Role assignment queue is processed server-side by bot with permission checks.
+- Internal callback endpoint requires shared secret.
+- Rate limiting is applied per IP and osu identifier.
+- osu account claims are uniqueness-enforced to prevent multi-claim races.
+
+## Extendability notes
+
+- Current implementation uses one-time Discord command link (`/linkcode`) instead of Discord OAuth.
+- To add OAuth2 flow later:
+  - add Discord OAuth login in web app
+  - replace `/linkcode` dependency with OAuth user identity in challenge rows
+  - keep finalize + queue assignment logic unchanged.
