@@ -54,6 +54,8 @@ async def test_start_and_finalize_verification(tmp_path: Path) -> None:
         rate_limit_per_minute=30,
         osu_cache_ttl_seconds=30,
         role_mapping_path="unused",
+        osu_redirect_uri="http://localhost/auth/osu/callback",
+        cors_origins="",
     )
     role_mapping = {"osu": {5: 999}}
     osu_client = FakeOsuClient()

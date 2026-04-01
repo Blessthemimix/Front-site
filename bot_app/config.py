@@ -28,6 +28,12 @@ class Settings:
     rate_limit_per_minute: int
     osu_cache_ttl_seconds: int
     role_mapping_path: str
+    osu_redirect_uri: str
+    cors_origins: str
+
+
+def _osu_redirect_from_base(base_url: str) -> str:
+    return base_url.rstrip("/") + "/auth/osu/callback"
 
 
 def _required(name: str) -> str:
@@ -47,6 +53,8 @@ def load_settings(
     osu_client_id = _required("OSU_CLIENT_ID") if require_osu else os.getenv("OSU_CLIENT_ID", "")
     osu_client_secret = _required("OSU_CLIENT_SECRET") if require_osu else os.getenv("OSU_CLIENT_SECRET", "")
     webhook_secret = _required("WEBHOOK_SECRET") if require_webhook else os.getenv("WEBHOOK_SECRET", "")
+    base_url = os.getenv("BASE_URL", "http://localhost:8000")
+    redirect = os.getenv("OSU_REDIRECT_URI", "").strip() or _osu_redirect_from_base(base_url)
     return Settings(
         discord_bot_token=discord_bot_token,
         discord_guild_id=int(discord_guild_raw),
@@ -54,7 +62,7 @@ def load_settings(
         osu_client_id=osu_client_id,
         osu_client_secret=osu_client_secret,
         webhook_secret=webhook_secret,
-        base_url=os.getenv("BASE_URL", "http://localhost:8000"),
+        base_url=base_url,
         database_path=os.getenv("DATABASE_PATH", "./data/bot_data.db"),
         verification_mode=os.getenv("VERIFICATION_MODE", "rank_digit_count"),
         digit_modulus=int(os.getenv("DIGIT_MODULUS", "10")),
@@ -63,6 +71,8 @@ def load_settings(
         rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "15")),
         osu_cache_ttl_seconds=int(os.getenv("OSU_CACHE_TTL_SECONDS", "30")),
         role_mapping_path=os.getenv("ROLE_MAPPING_PATH", "./config/role_mapping.json"),
+        osu_redirect_uri=redirect,
+        cors_origins=os.getenv("CORS_ORIGINS", "").strip(),
     )
 
 

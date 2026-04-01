@@ -69,5 +69,22 @@ async def init_db(database_path: str) -> None:
                 sliders INTEGER,
                 length INTEGER
             );
+            CREATE TABLE IF NOT EXISTS oauth_osu_states (
+                state TEXT PRIMARY KEY,
+                discord_id INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
             """)
+        await _migrate_schema(db)
         await db.commit()
+
+
+async def _migrate_schema(db: aiosqlite.Connection) -> None:
+    """Add columns/tables for older deployments."""
+    async with db.execute("PRAGMA table_info(verification_challenges)") as cursor:
+        cols = {row[1] for row in await cursor.fetchall()}
+    if "verification_source" not in cols:
+        await db.execute(
+            "ALTER TABLE verification_challenges ADD COLUMN verification_source TEXT NOT NULL DEFAULT 'bio'"
+        )
