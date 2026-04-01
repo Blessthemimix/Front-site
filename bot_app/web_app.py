@@ -165,6 +165,11 @@ def create_web_app(
 
     @app.post("/verify/start")
     async def start_verification(request: Request, body: StartVerificationRequest) -> dict[str, Any]:
+        if not settings.osu_client_id or not settings.osu_client_secret:
+            raise HTTPException(
+                status_code=503,
+                detail="OSU API credentials are not configured. Contact the administrator.",
+            )
         ip = request.client.host if request.client else "unknown"
         if not await limiter.allow(f"ip:{ip}") or not await limiter.allow(f"osu:{body.osu_identifier.lower()}"):
             raise HTTPException(status_code=429, detail="Too many attempts")
