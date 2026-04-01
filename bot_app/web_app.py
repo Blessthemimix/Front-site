@@ -13,11 +13,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
-# Убрали точки перед названиями файлов для корректной работы на Render
 from .config import Settings
-from osu_client import OsuClient
-from rate_limiter import RateLimiter
-from verification import VerificationInput, compute_digit_value, extract_osu_identifier
+from .osu_client import OsuClient
+from .rate_limiter import RateLimiter
+from .verification import VerificationInput, compute_digit_value, extract_osu_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -207,24 +206,3 @@ def create_web_app(
         return {"ok": True}
 
     return app
-
-# --- БЛОК ЗАПУСКА ДЛЯ RENDER ---
-from bot_app.config import load_settings # Убедись, что импорт есть
-
-settings = load_settings() # Вот это магическая кнопка, которая всё подтянет
-osu_client = OsuClient(settings)
-
-# Укажи здесь свои реальные ID ролей из Discord
-roles = {
-    "osu": {6: 1480962512336846888, 5: 1480961445142200481, 4: 1480961858847506485}, 
-    "mania": {6: 1480622189412745387, 5: 1480619551422025954, 4: 1480623754240331886},
-    "taiko": {},
-    "fruits": {}
-}
-
-# Создаем объект приложения, который будет искать Uvicorn
-app = create_web_app(
-    settings=settings,
-    osu_client=osu_client,
-    role_mapping=roles
-)
