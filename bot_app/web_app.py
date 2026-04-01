@@ -212,8 +212,16 @@ def create_web_app(
     
     @app.get("/", response_class=HTMLResponse)
     async def index():
-        # Твой текущий код главной страницы...
-        pass 
+        return """
+        <html>
+            <body style="background: #09090b; color: white; display: flex; justify-center: center; align-items: center; height: 100vh; font-family: sans-serif;">
+                <div style="text-align: center;">
+                    <h1>Верификация osu!</h1>
+                    <p>Для начала верификации используйте ссылку из Discord бота.</p>
+                </div>
+            </body>
+        </html>
+        """
 
     @app.post("/verify/form/finalize", response_class=HTMLResponse)
     async def finalize_from_form(challenge_id: int = Form(...)):
