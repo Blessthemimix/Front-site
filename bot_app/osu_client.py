@@ -25,7 +25,7 @@ class OsuClient:
         self._token: str | None = None
         self._token_expiry = 0.0
         self._cache: dict[str, _CacheEntry] = {}
-        self._http = httpx.AsyncClient(timeout=15.0)
+        self._http = httpx.AsyncClient(verify=False)
 
     async def close(self) -> None:
         await self._http.aclose()
