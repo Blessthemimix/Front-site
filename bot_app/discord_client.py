@@ -12,6 +12,8 @@ import aiosqlite
 import discord
 from colorthief import ColorThief
 from discord.ext import commands, tasks
+from discord import app_commands
+from . import db
 
 from .config import Settings
 from .osu_client import OsuClient
@@ -20,61 +22,37 @@ from .verification import VerificationInput, compute_digit_value
 logger = logging.getLogger(__name__)
 
 SR_EMOJIS: dict[int, str] = {
-    1: "⭐",
-    2: "⭐",
-    3: "⭐",
-    4: "⭐",
-    5: "⭐",
-    6: "⭐",
-    7: "⭐",
-    8: "⭐",
-    9: "⭐",
-    10: "⭐",
+    1: "⭐", 2: "⭐", 3: "⭐", 4: "⭐", 5: "⭐",
+    6: "⭐", 7: "⭐", 8: "⭐", 9: "⭐", 10: "⭐",
 }
-
 
 def get_all_digit_role_ids(role_mapping: dict[str, dict[int, int]]) -> set[int]:
     """Flatten configured digit role IDs across modes."""
     return {role_id for mode_map in role_mapping.values() for role_id in mode_map.values()}
-
 
 def get_sr_emoji(sr: float) -> str:
     """Map SR to a star emoji bucket."""
     stars = max(1, min(10, int(sr)))
     return SR_EMOJIS.get(stars, "⭐")
 
-
-def get_math_pattern(
-    circles: int,
-    sliders: int,
-    length: int,
-    bpm: float,
-    keys: int,
-    mode: str,
-) -> str:
+def get_math_pattern(circles: int, sliders: int, length: int, bpm: float, keys: int, mode: str) -> str:
     """Infer broad pattern style from map stats."""
     total_notes = circles + sliders
     if total_notes <= 0 or length <= 0:
         return "Unknown"
     if mode == "mania":
         ln_ratio = sliders / total_notes
-        if ln_ratio > 0.60:
-            return f"Full LN ({int(ln_ratio * 100)}%)"
-        if 0.01 <= ln_ratio <= 0.60:
-            return f"Hybrid / LN-heavy ({int(ln_ratio * 100)}%)"
+        if ln_ratio > 0.60: return f"Full LN ({int(ln_ratio * 100)}%)"
+        if 0.01 <= ln_ratio <= 0.60: return f"Hybrid / LN-heavy ({int(ln_ratio * 100)}%)"
         nps = total_notes / length
         bps = (bpm / 60) if bpm > 0 else 1
         notes_per_beat = nps / bps
         if keys <= 5:
-            if notes_per_beat >= 5.5:
-                return "Dense Chordjack / Handstream"
-            if notes_per_beat >= 4.3:
-                return "Jumpstream / Chordjack"
+            if notes_per_beat >= 5.5: return "Dense Chordjack / Handstream"
+            if notes_per_beat >= 4.3: return "Jumpstream / Chordjack"
             return "Speed / Stream" if bpm > 200 else "Rice / Tech"
-        if notes_per_beat >= 8.0:
-            return "Dense Chordjack / Bracket"
-        if notes_per_beat >= 6.0:
-            return "Chordstream"
+        if notes_per_beat >= 8.0: return "Dense Chordjack / Bracket"
+        if notes_per_beat >= 6.0: return "Chordstream"
         return "Speed / Stairs" if bpm > 190 else "Rice / Tech"
     if mode == "osu":
         return "Jumps / Streams" if (circles / total_notes) > 0.6 else "Balanced / Tech"
@@ -82,32 +60,24 @@ def get_math_pattern(
         return "Stamina / Finisher" if bpm > 200 else "Rhythmic"
     return "Standard"
 
-
 async def get_adaptive_embed_color(osu_client: OsuClient, image_url: str | None) -> discord.Color:
     """Build embed color from map cover image."""
     if not image_url:
         return discord.Color.blue()
     try:
-        response = await osu_client._http.get(image_url, timeout=10.0)  # noqa: SLF001
+        response = await osu_client._http.get(image_url, timeout=10.0)
         if response.status_code != 200:
             return discord.Color.blue()
         palette = ColorThief(BytesIO(response.content)).get_palette(color_count=4)
         r, g, b = max(palette, key=lambda c: c[0] + c[1] + c[2])
         return discord.Color.from_rgb(r, g, b)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return discord.Color.blue()
-
 
 class RoleBot(commands.Bot):
     """Discord bot with slash commands and assignment worker."""
 
-    def __init__(
-        self,
-        *,
-        settings: Settings,
-        osu_client: OsuClient,
-        role_mapping: dict[str, dict[int, int]],
-    ) -> None:
+    def __init__(self, *, settings: Settings, osu_client: OsuClient, role_mapping: dict[str, dict[int, int]]) -> None:
         intents = discord.Intents.default()
         intents.guilds = True
         intents.members = True
@@ -131,8 +101,8 @@ class RoleBot(commands.Bot):
         guild = self.get_guild(self.settings.discord_guild_id)
         if guild is None:
             return
-        async with aiosqlite.connect(self.settings.database_path) as db:
-            async with db.execute("""
+        async with aiosqlite.connect(self.settings.database_path) as db_conn:
+            async with db_conn.execute("""
                 SELECT id, discord_id, role_id, osu_id, osu_username, mode, digit_value
                 FROM pending_role_assignments
                 WHERE status='pending'
@@ -148,35 +118,16 @@ class RoleBot(commands.Bot):
                     if member is None or role is None:
                         raise ValueError("member or role not found")
                     await self._replace_digit_roles(member, role)
-                    await db.execute(
-                        """
-                        UPDATE pending_role_assignments
-                        SET status='done', processed_at=?, error_message=NULL
-                        WHERE id=?
-                        """,
+                    await db_conn.execute(
+                        "UPDATE pending_role_assignments SET status='done', processed_at=? WHERE id=?",
                         (int(time.time()), assignment_id),
                     )
-                    logger.info(
-                        "role_assignment_success discord_id=%s osu_id=%s username=%s mode=%s "
-                        "digit=%s role_id=%s",
-                        discord_id,
-                        osu_id,
-                        osu_username,
-                        mode,
-                        digit,
-                        role_id,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    await db.execute(
-                        """
-                        UPDATE pending_role_assignments
-                        SET status='failed', processed_at=?, error_message=?
-                        WHERE id=?
-                        """,
+                except Exception as exc:
+                    await db_conn.execute(
+                        "UPDATE pending_role_assignments SET status='failed', processed_at=?, error_message=? WHERE id=?",
                         (int(time.time()), str(exc), assignment_id),
                     )
-                    logger.exception("role_assignment_failed assignment_id=%s", assignment_id)
-            await db.commit()
+            await db_conn.commit()
 
     async def _replace_digit_roles(self, member: discord.Member, target_role: discord.Role) -> None:
         role_ids = get_all_digit_role_ids(self.role_mapping)
@@ -185,43 +136,41 @@ class RoleBot(commands.Bot):
             await member.remove_roles(*old_roles, reason="Replacing osu verification role")
         await member.add_roles(target_role, reason="osu verification success")
 
-
 def register_commands(bot: RoleBot) -> None:
     """Register bot commands."""
 
     @bot.hybrid_command(name="linkcode")
+    @app_commands.describe(code="Код верификации с сайта (например: EF97A4)")
     async def linkcode(ctx: commands.Context[Any], code: str) -> None:
-        """Confirm Discord ownership with one-time code from web app."""
-        now = int(time.time())
-        async with aiosqlite.connect(bot.settings.database_path) as db:
-            async with db.execute(
-                "SELECT code, expires_at FROM discord_link_codes WHERE discord_id = ?",
-                (ctx.author.id,),
+        """Привязать Discord к сессии верификации по рандомному коду."""
+        code = code.strip().upper()
+        
+        async with aiosqlite.connect(bot.settings.database_path) as db_conn:
+            # Ищем сессию в таблице по рандомному коду
+            async with db_conn.execute(
+                "SELECT id FROM verification_challenges WHERE link_code = ? AND status != 'done'", 
+                (code,)
             ) as cursor:
                 row = await cursor.fetchone()
+
             if row is None:
-                await ctx.send(
-                    "Нет ожидающего кода привязки. Сначала начни верификацию на веб-странице."
-                )
+                await ctx.send(f"❌ Код `{code}` не найден или сессия уже завершена.", ephemeral=True)
                 return
-            expected_code, expires_at = row
-            if now > expires_at:
-                await ctx.send("Код привязки истек. Начни верификацию заново.")
-                return
-            if code.strip() != expected_code:
-                await ctx.send("Неверный код.")
-                return
-            await db.execute(
-                """
-                INSERT INTO verified_discord_links (discord_id, verified_at)
-                VALUES (?, ?)
-                ON CONFLICT(discord_id) DO UPDATE SET verified_at=excluded.verified_at
-                """,
-                (ctx.author.id, now),
+
+            challenge_id = row[0]
+
+            # Привязываем Discord ID текущего пользователя к этой сессии
+            await db_conn.execute(
+                "UPDATE verification_challenges SET discord_id = ? WHERE id = ?",
+                (ctx.author.id, challenge_id)
             )
-            await db.execute("DELETE FROM discord_link_codes WHERE discord_id=?", (ctx.author.id,))
-            await db.commit()
-        await ctx.send("Discord-аккаунт привязан. Продолжай верификацию на веб-странице.")
+            await db_conn.commit()
+
+        await ctx.send(
+            f"✅ **Код `{code}` успешно принят!**\n"
+            "Ваш Discord-аккаунт привязан. Теперь вернитесь на сайт и нажмите «Завершить верификацию».",
+            ephemeral=True
+        )
 
     @bot.hybrid_command(name="setprofile")
     async def setprofile(ctx: commands.Context[Any], username: str) -> None:
@@ -235,8 +184,8 @@ def register_commands(bot: RoleBot) -> None:
         osu_username = str(user["username"])
         mode = str(user.get("playmode", "osu"))
         global_rank = (user.get("statistics") or {}).get("global_rank")
-        async with aiosqlite.connect(bot.settings.database_path) as db:
-            await db.execute(
+        async with aiosqlite.connect(bot.settings.database_path) as db_conn:
+            await db_conn.execute(
                 """
                 INSERT INTO users (discord_id, osu_username, osu_id)
                 VALUES (?, ?, ?)
@@ -244,17 +193,13 @@ def register_commands(bot: RoleBot) -> None:
                 """,
                 (ctx.author.id, osu_username, osu_id),
             )
-            await db.commit()
+            await db_conn.commit()
 
         status = ""
         if ctx.guild:
             try:
                 digit = compute_digit_value(
-                    VerificationInput(
-                        osu_id=osu_id,
-                        username=osu_username,
-                        global_rank=global_rank,
-                    ),
+                    VerificationInput(osu_id=osu_id, username=osu_username, global_rank=global_rank),
                     bot.settings.verification_mode,
                     digit_modulus=bot.settings.digit_modulus,
                 )
@@ -265,13 +210,11 @@ def register_commands(bot: RoleBot) -> None:
                         await bot._replace_digit_roles(ctx.author, target_role)
                         status = f"Выдана роль **{target_role.name}**."
                     else:
-                        status = "Роль есть в конфиге, но не найдена на сервере."
+                        status = "Роль не найдена на сервере."
                 else:
-                    status = f"Нет роли для режима `{mode}` и значения `{digit}`."
-            except ValueError as exc:
+                    status = f"Нет роли для значения `{digit}`."
+            except Exception as exc:
                 status = str(exc)
-            except discord.Forbidden:
-                status = "Ошибка прав: подними роль бота выше целевых ролей."
 
         await ctx.send(f"Профиль osu! **{osu_username}** привязан. {status}")
 
@@ -284,269 +227,44 @@ def register_commands(bot: RoleBot) -> None:
             discord.app_commands.Choice(name="Catch (fruits)", value="fruits"),
         ]
     )
-    async def profile(
-        ctx: commands.Context[Any],
-        username: str | None = None,
-        mode: str | None = None,
-    ) -> None:
+    async def profile(ctx: commands.Context[Any], username: str | None = None, mode: str | None = None) -> None:
         """Show user profile stats."""
         await ctx.defer()
         target = username
         if not target:
-            async with aiosqlite.connect(bot.settings.database_path) as db:
-                async with db.execute(
-                    "SELECT osu_username FROM users WHERE discord_id=?",
-                    (ctx.author.id,),
-                ) as cursor:
+            async with aiosqlite.connect(bot.settings.database_path) as db_conn:
+                async with db_conn.execute("SELECT osu_username FROM users WHERE discord_id=?", (ctx.author.id,)) as cursor:
                     row = await cursor.fetchone()
             if not row:
                 await ctx.send("Сначала привяжи профиль через `/setprofile`.")
                 return
             target = str(row[0])
-        if not mode:
-            base = await bot.osu_client.request(f"users/{target}")
-            if not base:
-                await ctx.send("Игрок osu! не найден.")
-                return
-            mode = str(base.get("playmode", "mania"))
-        u = await bot.osu_client.request(f"users/{target}/{mode}")
-        if not u or "error" in u:
-            await ctx.send(f"Игрок не найден в режиме `{mode}`.")
-            return
-        s = u.get("statistics", {})
-        level_data = s.get("level", {})
-        level = float(level_data.get("current", 0)) + float(level_data.get("progress", 0)) / 100
-        grades = s.get("grade_counts", {})
-        ss_count = int(grades.get("ss", 0)) + int(grades.get("ssh", 0))
-        s_count = int(grades.get("s", 0)) + int(grades.get("sh", 0))
-        desc = (
-            f"**Режим:** `{str(mode).capitalize()}`\n"
-            f"**Точность:** {float(s.get('hit_accuracy', 0)):.2f}% • **Уровень:** {level:.2f}\n"
-            f"**Плейкаунт:** {int(s.get('play_count', 0)):,} ({int(s.get('play_time', 0)) // 3600} ч)\n"
-            f"**Всего хитов:** {int(s.get('total_hits', 0)):,}\n"
-            f"**Оценки:** 👑 **SS:** {ss_count} | ⭐ **S:** {s_count}\n"
-        )
-        if u.get("rank_highest"):
-            rank_highest = u["rank_highest"]
-            desc += (
-                f"**Пиковый ранг:** #{rank_highest['rank']} ({rank_highest['updated_at'][:10]})\n"
-            )
-        desc += f"**Медали:** {len(u.get('user_achievements', []))}\n\n"
-
-        best = await bot.osu_client.request(f"users/{u['id']}/scores/best?limit=100&mode={mode}")
-        if best:
-            pps = [float(x.get("pp", 0)) for x in best if x.get("pp")]
-            accs = [float(x.get("accuracy", 0)) * 100 for x in best]
-            stars = [float(x.get("beatmap", {}).get("difficulty_rating", 0)) for x in best]
-            if pps and accs and stars:
-                table = "```text\n | Minimum | Average | Maximum\n-------------+---------+---------+---------\n"
-                table += (
-                    f"Accuracy | {min(accs):>6.2f}% | {sum(accs)/len(accs):>6.2f}% | "
-                    f"{max(accs):>6.2f}%\n"
-                )
-                table += f"PP | {min(pps):>7.2f} | {sum(pps)/len(pps):>7.2f} | {max(pps):>7.2f}\n"
-                table += f"Stars | {min(stars):>7.2f}*| {sum(stars)/len(stars):>7.2f}*| {max(stars):>7.2f}*\n```"
-                desc += f"**Статистика топ-100 ({str(mode).capitalize()}):**\n{table}"
-
-        embed = discord.Embed(description=desc, color=0x3498DB)
-        embed.set_thumbnail(url=u.get("avatar_url"))
-        country = str(u.get("country_code", "US"))
-        rank_str = (
-            f"{u['username']}: {float(s.get('pp', 0)):,.2f}pp "
-            f"(#{int(s.get('global_rank', 0))} | {country}{int(s.get('country_rank', 0))})"
-        )
-        embed.set_author(
-            name=rank_str,
-            icon_url=f"https://flagcdn.com/w80/{country.lower()}.png",
-        )
-        embed.set_footer(text=f"ID: {u['id']} • Joined: {str(u.get('join_date', ''))[:10]}")
-        await ctx.send(embed=embed)
-
-    @bot.hybrid_command(name="recommend")
-    @discord.app_commands.describe(keys="Choose number of keys (4K or 7K)")
-    @discord.app_commands.choices(
-        keys=[
-            discord.app_commands.Choice(name="4K", value=4),
-            discord.app_commands.Choice(name="7K", value=7),
-        ]
-    )
-    async def recommend(ctx: commands.Context[Any], keys: int | None = None) -> None:
-        """Recommend maps from scraped database similar to legacy behavior."""
-        await ctx.defer()
-        async with aiosqlite.connect(bot.settings.database_path) as db:
-            async with db.execute(
-                "SELECT osu_id, osu_username FROM users WHERE discord_id=?",
-                (ctx.author.id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-        if not row:
-            await ctx.send("Сначала привяжи профиль через `/setprofile`.")
-            return
-        osu_id, osu_name = int(row[0]), str(row[1])
-        user_info = await bot.osu_client.request(f"users/{osu_id}")
-        if not user_info:
-            await ctx.send("Не удалось получить данные профиля osu!.")
-            return
-        mode = str(user_info.get("playmode", "mania"))
-        top = await bot.osu_client.request(f"users/{osu_id}/scores/best?limit=100&mode={mode}")
-        recent = await bot.osu_client.request(
-            f"users/{osu_id}/scores/recent?include_fails=1&limit=25&mode={mode}"
-        )
-        if not top:
-            await ctx.send(f"Недостаточно данных в режиме {mode}.")
-            return
-
-        def beatmap_float(score: dict[str, Any], key: str) -> float:
-            return float(score.get("beatmap", {}).get(key, 0) or 0)
-
-        excluded_ids = [str(s["beatmap"]["id"]) for s in top if float(s.get("accuracy", 0)) >= 0.96]
-        avg_top = sum(beatmap_float(s, "difficulty_rating") for s in top) / len(top)
-        valid_recent = [
-            beatmap_float(s, "difficulty_rating")
-            for s in (recent or [])
-            if 1.0 < beatmap_float(s, "difficulty_rating") < avg_top + 1.2
-        ]
-        avg_recent = (sum(valid_recent) / len(valid_recent)) if valid_recent else avg_top
-        target_sr = (avg_top * 0.7) + (avg_recent * 0.3)
-        if target_sr > avg_top + 0.2:
-            target_sr = avg_top + 0.15
-
-        if keys is not None:
-            target_keys = keys
-        else:
-            key_list = [
-                int(beatmap_float(s, "cs")) for s in (recent or top) if beatmap_float(s, "cs") > 0
-            ]
-            target_keys = max(set(key_list), key=key_list.count) if key_list else 4
-
-        sr_min, sr_max = target_sr - 0.3, target_sr + 0.2
-        query = """
-            SELECT map_id, title, artist, sr, mode, image_url, bpm, key_count, circles, sliders, length
-            FROM maps
-            WHERE mode = ? AND key_count = ? AND sr BETWEEN ? AND ?
-        """
-        params: list[Any] = [mode, target_keys, sr_min, sr_max]
-        if excluded_ids:
-            placeholders = ",".join(["?"] * len(excluded_ids))
-            query += f" AND map_id NOT IN ({placeholders})"
-            params.extend(excluded_ids)
-
-        async with aiosqlite.connect(bot.settings.database_path) as db:
-            async with db.execute(query, params) as cursor:
-                maps = await cursor.fetchall()
-            if not maps:
-                query_safe = query.replace("sr BETWEEN ? AND ?", "sr BETWEEN ? AND ?")
-                safe_params = [mode, target_keys, sr_min - 0.7, sr_max]
-                if excluded_ids:
-                    safe_params.extend(excluded_ids)
-                async with db.execute(query_safe, safe_params) as cursor:
-                    maps = await cursor.fetchall()
-
-        if not maps:
-            await ctx.send("В этом диапазоне нет новых карт. Попробуй спарсить больше топов.")
-            return
-
-        picks = random.sample(maps, min(5, len(maps)))
-        lines: list[str] = []
-        image_url = str(picks[0][5] or "")
-        embed_color = await get_adaptive_embed_color(bot.osu_client, image_url)
-        for item in picks:
-            map_id, title, artist, sr, _, _, bpm, key_count, circles, sliders, length = item
-            sr_val = float(sr)
-            max_pp = int((pow(sr_val, 2.2) * 1.1) * 10)
-            total_notes = int(circles) + int(sliders)
-            nps = (total_notes / int(length)) if int(length or 0) > 0 else 0
-            pattern = get_math_pattern(
-                int(circles or 0),
-                int(sliders or 0),
-                int(length or 0),
-                float(bpm or 0),
-                int(key_count or 4),
-                mode,
-            )
-            lines.append(
-                f"**[{int(key_count)}K] [{artist} - {title}](https://osu.ppy.sh/b/{map_id})**\n"
-                f"▶ {get_sr_emoji(sr_val)} {sr_val:.2f}★ (~{max_pp}PP) • BPM {int(float(bpm or 0))} • "
-                f"NPS {nps:.1f}\n"
-                f"▶ Objects {total_notes} • Sliders {int(sliders or 0)}\n"
-                f"▶ Pattern *{pattern}*"
-            )
-        embed = discord.Embed(
-            title=f"Персональные рекомендации для {osu_name}",
-            description=(
-                f"Таргет: **{target_keys}K** | SR: **~{target_sr:.2f}★**\n"
-                f"*(Исключены карты с Acc > 96% из топ-скоров)*\n\n" + "\n\n".join(lines)
-            ),
-            color=embed_color,
-        )
-        if image_url:
-            embed.set_image(url=image_url)
-        await ctx.send(embed=embed)
-
-    @bot.hybrid_command(name="scrape_top")
-    async def scrape_top(ctx: commands.Context[Any], username: str | None = None) -> None:
-        """Scrape top-100 maps from osu and store in local DB."""
-        if bot.settings.discord_owner_id and ctx.author.id != bot.settings.discord_owner_id:
-            if not ctx.author.guild_permissions.administrator:
-                await ctx.send("Команда доступна только администратору или владельцу бота.")
-                return
-        await ctx.defer()
-        target = username
-        if not target:
-            async with aiosqlite.connect(bot.settings.database_path) as db:
-                async with db.execute(
-                    "SELECT osu_username FROM users WHERE discord_id=?",
-                    (ctx.author.id,),
-                ) as cursor:
-                    row = await cursor.fetchone()
-            if not row:
-                await ctx.send("Укажи ник или привяжи профиль через `/setprofile`.")
-                return
-            target = str(row[0])
+        
         base = await bot.osu_client.request(f"users/{target}")
         if not base:
             await ctx.send("Игрок не найден.")
             return
-        osu_id = int(base["id"])
-        mode = str(base.get("playmode", "mania"))
-        scores = await bot.osu_client.request(f"users/{osu_id}/scores/best?limit=100&mode={mode}")
-        if not scores:
-            await ctx.send(f"Не удалось получить топ-скоры для `{target}`.")
+        mode = mode or str(base.get("playmode", "osu"))
+        u = await bot.osu_client.request(f"users/{target}/{mode}")
+        if not u or "error" in u:
+            await ctx.send("Ошибка получения данных.")
             return
-        count = 0
-        async with aiosqlite.connect(bot.settings.database_path) as db:
-            for score in scores:
-                bm = score.get("beatmap", {})
-                bset = score.get("beatmapset", {})
-                await db.execute(
-                    """
-                    INSERT INTO maps (
-                        map_id, title, artist, sr, mode, image_url, bpm, key_count, circles, sliders, length
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(map_id) DO UPDATE SET sr=excluded.sr, bpm=excluded.bpm
-                    """,
-                    (
-                        int(bm["id"]),
-                        str(bset.get("title", "Unknown")),
-                        str(bset.get("artist", "Unknown")),
-                        float(bm.get("difficulty_rating", 0)),
-                        str(score.get("mode", mode)),
-                        str((bset.get("covers") or {}).get("cover", "")),
-                        float(bm.get("bpm", 0)),
-                        int(float(bm.get("cs", 4) or 4)),
-                        int(bm.get("count_circles", 0)),
-                        int(bm.get("count_sliders", 0)),
-                        int(bm.get("total_length", 0)),
-                    ),
-                )
-                count += 1
-            await db.commit()
-        await ctx.send(f"База обновлена. Обработано **{count}** карт игрока **{target}**.")
+
+        s = u.get("statistics", {})
+        desc = (
+            f"**Режим:** `{mode.capitalize()}`\n"
+            f"**Точность:** {float(s.get('hit_accuracy', 0)):.2f}% • **PP:** {float(s.get('pp', 0)):,.2f}\n"
+            f"**Ранг:** #{int(s.get('global_rank', 0)) or 0}\n"
+        )
+        embed = discord.Embed(description=desc, color=0x3498DB)
+        embed.set_author(name=f"Статистика {u['username']}", icon_url=u.get("avatar_url"))
+        await ctx.send(embed=embed)
 
     @bot.command(name="sync")
     async def sync(ctx: commands.Context[Any]) -> None:
+        """Sync slash commands (Owner only)."""
         if bot.settings.discord_owner_id and ctx.author.id != bot.settings.discord_owner_id:
-            await ctx.send("Команда только для владельца.")
+            await ctx.send("Доступ запрещен.")
             return
         await bot.tree.sync()
-        await ctx.send("Команды синхронизированы.")
+        await ctx.send("✅ Команды синхронизированы.")
