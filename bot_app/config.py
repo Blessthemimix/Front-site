@@ -37,20 +37,23 @@ def _required(name: str) -> str:
     return value
 
 
-def load_settings(*, require_discord: bool = True, require_osu: bool = True) -> Settings:
+def load_settings(
+    *, require_discord: bool = True, require_osu: bool = True, require_webhook: bool = True
+) -> Settings:
     """Load settings from environment variables."""
     load_dotenv()
     discord_bot_token = _required("DISCORD_BOT_TOKEN") if require_discord else os.getenv("DISCORD_BOT_TOKEN", "")
     discord_guild_raw = _required("DISCORD_GUILD_ID") if require_discord else os.getenv("DISCORD_GUILD_ID", "0")
     osu_client_id = _required("OSU_CLIENT_ID") if require_osu else os.getenv("OSU_CLIENT_ID", "")
     osu_client_secret = _required("OSU_CLIENT_SECRET") if require_osu else os.getenv("OSU_CLIENT_SECRET", "")
+    webhook_secret = _required("WEBHOOK_SECRET") if require_webhook else os.getenv("WEBHOOK_SECRET", "")
     return Settings(
         discord_bot_token=discord_bot_token,
         discord_guild_id=int(discord_guild_raw),
         discord_owner_id=int(os.getenv("DISCORD_OWNER_ID", "0")) or None,
         osu_client_id=osu_client_id,
         osu_client_secret=osu_client_secret,
-        webhook_secret=_required("WEBHOOK_SECRET"),
+        webhook_secret=webhook_secret,
         base_url=os.getenv("BASE_URL", "http://localhost:8000"),
         database_path=os.getenv("DATABASE_PATH", "./data/bot_data.db"),
         verification_mode=os.getenv("VERIFICATION_MODE", "rank_digit_count"),
