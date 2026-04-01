@@ -11,12 +11,12 @@ from typing import Any
 from dotenv import load_dotenv
 
 
-@dataclass(slots=True)
+@dataclass
 class Settings:
     discord_bot_token: str
     discord_guild_id: int
-    discord_owner_id: int | None
-    osu_client_id: str
+    discord_owner_id: int
+    osu_client_id: int
     osu_client_secret: str
     webhook_secret: str
     base_url: str

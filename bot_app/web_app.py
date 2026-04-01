@@ -209,7 +209,9 @@ def create_web_app(
     return app
 
 # --- БЛОК ЗАПУСКА ДЛЯ RENDER ---
-settings = Settings()
+from bot_app.config import load_settings # Убедись, что импорт есть
+
+settings = load_settings() # Вот это магическая кнопка, которая всё подтянет
 osu_client = OsuClient(settings)
 
 # Укажи здесь свои реальные ID ролей из Discord
