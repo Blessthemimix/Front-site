@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import aiosqlite
 
 
 async def init_db(database_path: str) -> None:
     """Create required tables."""
+    db_file = Path(database_path)
+    db_file.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(database_path) as db:
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS users (
