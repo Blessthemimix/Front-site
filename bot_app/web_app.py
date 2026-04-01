@@ -186,6 +186,26 @@ def create_web_app(
             "mode": mode,
         }
 
+    @app.post("/verify/form/finalize")
+async def finalize_verification(data: dict):
+    session_id = data.get("session_id") # ID сессии: 1 со скриншота
+    
+    # 1. Достаем сессию из БД
+    challenge = await db.get_challenge_by_id(session_id)
+    
+    # 2. Проверяем, привязан ли уже Discord (после команды /linkcode)
+    if not challenge or not challenge.get("discord_id"):
+        return {"status": "error", "message": "Сначала введите команду /linkcode в Discord!"}
+
+    # 3. Если всё ок, рассчитываем DIGIT и выдаем роль
+    # (Здесь твоя существующая логика из compute_digit_value)
+    digit = compute_digit_value(challenge['osu_id'])
+    
+    # Добавляем задачу на выдачу роли в очередь
+    await db.add_to_pending_roles(challenge['discord_id'], digit)
+    
+    return {"status": "success", "message": "Верификация завершена! Роль скоро будет выдана."}
+
     @app.get("/auth/osu/login")
     async def osu_oauth_login(
         request: Request,
