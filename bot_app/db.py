@@ -88,3 +88,7 @@ async def _migrate_schema(db: aiosqlite.Connection) -> None:
         await db.execute(
             "ALTER TABLE verification_challenges ADD COLUMN verification_source TEXT NOT NULL DEFAULT 'bio'"
         )
+        async with db.execute("PRAGMA table_info(verification_challenges)") as cursor:
+            cols = {row[1] for row in await cursor.fetchall()}
+    if "link_code" not in cols:
+        await db.execute("ALTER TABLE verification_challenges ADD COLUMN link_code TEXT")

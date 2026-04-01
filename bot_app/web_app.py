@@ -123,32 +123,55 @@ def create_web_app(
     # --- РОУТЫ ---
 
     @app.get("/", response_class=HTMLResponse)
-    async def index():
-        return """
+    async def index(discord_id: int | None = Query(default=None)):
+        pref = "" if discord_id is None else str(discord_id)
+        return f"""
         <!DOCTYPE html>
         <html lang="ru">
         <head>
             <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
             <script src="https://cdn.tailwindcss.com"></script>
             <title>osu! Verification</title>
         </head>
-        <body class="bg-[#09090b] text-white min-h-screen flex items-center justify-center p-6 font-sans">
+        <body class="bg-[#09090b] text-white min-h-screen flex items-center justify-center p-6 font-sans antialiased">
             <div class="w-full max-w-md bg-[#0c0c0e] border border-white/5 rounded-[2.5rem] p-10 space-y-8 shadow-2xl text-center">
                 <div class="space-y-2">
-                    <h1 class="text-4xl font-black uppercase tracking-tighter italic">Верификация osu!</h1>
-                    <p class="text-gray-500 text-sm font-medium uppercase tracking-widest">Подтвердите свой профиль</p>
-                </div>
-                
-                <div class="py-4">
-                    <div class="bg-gradient-to-br from-pink-500/10 to-violet-500/10 p-8 rounded-3xl border border-white/5">
-                        <p class="text-gray-400 text-sm leading-relaxed">
-                            Для начала процесса используйте ссылку, полученную от нашего Discord-бота. 
-                            Она содержит ваш уникальный <code class="text-pink-400">discord_id</code>.
-                        </p>
+                    <div class="inline-flex items-center justify-center px-4 py-2 rounded-2xl bg-gradient-to-br from-pink-500/20 to-violet-500/20 border border-white/10 mb-2">
+                        <span class="text-sm font-black uppercase tracking-tighter italic bg-gradient-to-r from-pink-400 to-violet-400 bg-clip-text text-transparent">osu!</span>
                     </div>
+                    <h1 class="text-4xl font-black uppercase tracking-tighter italic">Верификация osu!</h1>
+                    <p class="text-gray-500 text-sm font-medium uppercase tracking-widest">Вход через osu! и роль по digit</p>
                 </div>
 
-                <div class="pt-4 border-t border-white/5">
+                <ol class="text-left text-xs text-gray-500 space-y-2 border border-white/5 rounded-2xl p-4 bg-white/[0.02]">
+                    <li class="flex gap-2"><span class="text-pink-400 font-bold shrink-0">1.</span> Укажите ваш числовой Discord ID (режим разработчика → ПКМ по профилю → «Скопировать ID»).</li>
+                    <li class="flex gap-2"><span class="text-pink-400 font-bold shrink-0">2.</span> Нажмите кнопку ниже — откроется вход osu! (OAuth 2.0).</li>
+                    <li class="flex gap-2"><span class="text-pink-400 font-bold shrink-0">3.</span> В Discord выполните <code class="text-violet-300">/linkcode</code> с кодом со страницы.</li>
+                    <li class="flex gap-2"><span class="text-pink-400 font-bold shrink-0">4.</span> Нажмите «Завершить верификацию» — роль выдаётся по настроенному digit.</li>
+                </ol>
+
+                <form method="get" action="/auth/osu/login" class="space-y-4 text-left">
+                    <div>
+                        <label for="did" class="block text-[10px] uppercase font-bold tracking-[0.2em] text-gray-500 mb-2">Discord ID</label>
+                        <input id="did" name="discord_id" type="number" min="1" step="1" required
+                            placeholder="Например: 123456789012345678"
+                            value="{pref}"
+                            class="w-full h-14 px-5 rounded-2xl bg-black/40 border border-white/10 text-white placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-pink-500/50 focus:border-pink-500/40 font-mono text-sm" />
+                    </div>
+                    <button type="submit"
+                        class="w-full bg-gradient-to-r from-pink-500 to-violet-600 text-white h-16 rounded-2xl font-black uppercase tracking-widest text-sm shadow-lg shadow-pink-500/20 hover:brightness-110 hover:scale-[1.02] transition-all active:scale-95">
+                        Верифицировать через osu!
+                    </button>
+                </form>
+
+                <div class="bg-gradient-to-br from-pink-500/10 to-violet-500/10 p-6 rounded-3xl border border-white/5">
+                    <p class="text-gray-400 text-xs leading-relaxed text-center">
+                        После входа osu! сервер считает <span class="text-white font-semibold">digit</span> по вашему рангу/ID (режим в <code class="text-pink-400/90">VERIFICATION_MODE</code>) и ставит в очередь соответствующую роль на Discord.
+                    </p>
+                </div>
+
+                <div class="pt-2 border-t border-white/5">
                     <p class="text-[10px] text-gray-700 uppercase font-bold tracking-[0.2em]">Powered by osu! OAuth 2.0</p>
                 </div>
             </div>
@@ -194,9 +217,17 @@ def create_web_app(
         async with aiosqlite.connect(settings.database_path) as db:
             cursor = await db.execute(
                 """INSERT INTO verification_challenges 
-                (osu_id, osu_username, mode, profile_token, status, created_at, expires_at, verification_source, link_code)
-                VALUES (?, ?, ?, ?, 'pending', ?, ?, 'oauth', ?)""",
-                (osu_id, username, mode, OAUTH_PROFILE_PLACEHOLDER, now, now + settings.verification_token_ttl_seconds, discord_link_code),
+                (discord_id, osu_id, osu_username, mode, profile_token, status, created_at, expires_at, verification_source, link_code)
+                VALUES (0, ?, ?, ?, ?, 'pending', ?, ?, 'oauth', ?)""",
+                (
+                    osu_id,
+                    username,
+                    mode,
+                    OAUTH_PROFILE_PLACEHOLDER,
+                    now,
+                    now + settings.verification_token_ttl_seconds,
+                    discord_link_code,
+                ),
             )
             challenge_id = cursor.lastrowid
             await db.commit()
@@ -204,9 +235,16 @@ def create_web_app(
         return HTMLResponse(content=f"""
         <!DOCTYPE html>
         <html lang="ru">
-        <head><script src="https://cdn.tailwindcss.com"></script></head>
-        <body class="bg-[#09090b] text-white min-h-screen flex items-center justify-center p-6">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="bg-[#09090b] text-white min-h-screen flex items-center justify-center p-6 font-sans antialiased">
             <div class="w-full max-w-md bg-[#0c0c0e] border border-white/5 rounded-[2.5rem] p-8 space-y-6 shadow-2xl text-center">
+                <div class="inline-flex px-4 py-2 rounded-2xl bg-gradient-to-br from-pink-500/20 to-violet-500/20 border border-white/10">
+                    <span class="text-sm font-black uppercase tracking-tighter italic bg-gradient-to-r from-pink-400 to-violet-400 bg-clip-text text-transparent">osu!</span>
+                </div>
                 <h2 class="text-2xl font-bold uppercase tracking-tighter">Шаг 2: Discord</h2>
                 <p class="text-sm text-gray-400">Аккаунт <b>{username}</b> подтвержден. Теперь привяжите Discord:</p>
                 <div class="bg-white/5 p-6 rounded-2xl text-left border border-white/5">
@@ -232,13 +270,18 @@ def create_web_app(
             return HTMLResponse(content=f"""
             <!DOCTYPE html>
             <html lang="ru">
-            <head><script src="https://cdn.tailwindcss.com"></script></head>
-            <body class="bg-[#09090b] text-white min-h-screen flex items-center justify-center p-6">
-                <div class="w-full max-w-md bg-[#0c0c0e] border border-white/5 rounded-[2.5rem] p-10 text-center space-y-4">
-                    <div class="text-green-500 text-5xl mb-4">✓</div>
-                    <h2 class="text-2xl font-bold uppercase">Успешно!</h2>
-                    <p class="text-gray-400">Ваш DIGIT: <span class="text-white font-bold">{result['digit']}</span></p>
-                    <p class="text-sm text-gray-500 italic">Роли будут выданы в течение минуты.</p>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <script src="https://cdn.tailwindcss.com"></script>
+            </head>
+            <body class="bg-[#09090b] text-white min-h-screen flex items-center justify-center p-6 font-sans antialiased">
+                <div class="w-full max-w-md bg-[#0c0c0e] border border-white/5 rounded-[2.5rem] p-10 text-center space-y-4 shadow-2xl">
+                    <div class="text-emerald-400 text-5xl mb-2">✓</div>
+                    <h2 class="text-2xl font-black uppercase tracking-tighter italic">Успешно!</h2>
+                    <p class="text-gray-400">Ваш <span class="text-pink-400 font-semibold">digit</span>: <span class="text-white font-bold text-2xl font-mono">{result['digit']}</span></p>
+                    <p class="text-xs text-gray-500 uppercase tracking-widest">Режим: {result['mode']}</p>
+                    <p class="text-sm text-gray-500 italic">Роль поставлена в очередь — выдача на сервере в течение минуты.</p>
                 </div>
             </body>
             </html>
