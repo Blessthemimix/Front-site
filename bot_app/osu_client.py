@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,8 @@ class OsuClient:
         self._token: str | None = None
         self._token_expiry = 0.0
         self._cache: dict[str, _CacheEntry] = {}
+        # (beatmap_id, ruleset_id, mods_json) -> star rating at expiry
+        self._star_rating_cache: dict[str, tuple[float, float]] = {}
         self._http = httpx.AsyncClient(verify=False)
 
     async def close(self) -> None:
@@ -65,3 +68,47 @@ class OsuClient:
         payload = response.json()
         self._cache[endpoint] = _CacheEntry(value=payload, expires_at=now + self.cache_ttl)
         return payload
+
+    async def beatmap_star_rating(
+        self,
+        beatmap_id: int,
+        mods: list[dict[str, Any]] | None,
+        ruleset_id: int,
+        *,
+        cache_ttl: int = 3600,
+    ) -> float | None:
+        """
+        Star rating for the given beatmap with mods (matches in-game / top play).
+        GET beatmap.difficulty_rating is nomod-only; use this for HT/DT/etc.
+        """
+        mods_list = mods or []
+        mods_key = json.dumps(mods_list, sort_keys=True)
+        cache_key = f"{beatmap_id}:{ruleset_id}:{mods_key}"
+        now = time.time()
+        cached = self._star_rating_cache.get(cache_key)
+        if cached and now < cached[1]:
+            return cached[0]
+
+        token = await self._ensure_token()
+        response = await self._http.post(
+            f"https://osu.ppy.sh/api/v2/beatmaps/{beatmap_id}/attributes",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"mods": mods_list, "ruleset_id": ruleset_id},
+        )
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        attrs = data.get("attributes") if isinstance(data, dict) else None
+        if not isinstance(attrs, dict):
+            return None
+        raw = attrs.get("star_rating")
+        if raw is None:
+            raw = attrs.get("stars")
+        if raw is None:
+            return None
+        try:
+            star = float(raw)
+        except (TypeError, ValueError):
+            return None
+        self._star_rating_cache[cache_key] = (star, now + cache_ttl)
+        return star
