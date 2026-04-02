@@ -13,7 +13,9 @@ async def get_db_conn(url: str = None, key: str = None):
     Создает подключение к PostgreSQL. 
     Аргументы url и key добавлены для совместимости с вызовами из других модулей.
     """
-    conn = await asyncpg.connect(DATABASE_URL)
+    # Supabase pooler (pgbouncer in transaction mode) is incompatible with
+    # asyncpg prepared statement cache. Disable cache for stable connections.
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         yield conn
     finally:
