@@ -66,6 +66,7 @@ scikit-learn==1.8.0
 scipy==1.17.1
 soundfile==0.13.1
 soxr==1.0.0
+supabase
 standard-aifc==3.13.0
 standard-chunk==3.13.0
 standard-sunau==3.13.0
