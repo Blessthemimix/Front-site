@@ -133,70 +133,92 @@ def create_web_app(
 
     # --- РОУТЫ ---
 
-    @app.get("/", response_class=HTMLResponse)
-    async def index(linkcode: str | None = Query(default=None)):
-        # Обрабатываем linkcode вместо discord_id
-        code_display = linkcode if linkcode else "Код не указан"
-        
-        html_content = f"""
-        <!DOCTYPE html>
-        <html lang="ru">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Верификация | Discord & osu!</title>
-            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-            <style>
-                body {{
-                    margin: 0; padding: 0;
-                    display: flex; justify-content: center; align-items: center;
-                    min-height: 100vh;
-                    background-color: #121212;
-                    color: #ffffff; font-family: 'Inter', sans-serif;
-                }}
-                .container {{
-                    background: #1e1e1e;
-                    padding: 40px 50px; border-radius: 12px;
-                    border: 1px solid #333;
-                    text-align: center;
-                    box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-                    max-width: 400px; width: 100%;
-                }}
-                h1 {{ margin-top: 0; font-size: 24px; font-weight: 600; letter-spacing: 0.5px; }}
-                p {{ color: #a0a0a0; line-height: 1.6; font-size: 15px; margin-bottom: 20px; }}
-                .code-box {{
-                    margin: 25px 0; padding: 15px;
-                    background: #0a0a0a;
-                    border: 1px solid #444; border-radius: 8px;
-                    font-size: 22px; font-weight: bold; letter-spacing: 3px;
-                    color: #ffffff;
-                }}
-                .btn {{
-                    display: inline-block; width: 100%;
-                    margin-top: 15px; padding: 14px 0;
-                    background: #ffffff; color: #000000;
-                    text-decoration: none; border-radius: 6px;
-                    font-weight: 600; font-size: 16px;
-                    transition: 0.2s; box-sizing: border-box;
-                }}
-                .btn:hover {{ background: #d0d0d0; transform: translateY(-2px); }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>Подтверждение</h1>
-                <p>Вы перешли по ссылке для привязки вашего аккаунта osu! к серверу Discord.</p>
-                
-                <div class="code-box">{code_display}</div>
-                
-                <p>Если ваш код (<b>/linkcode</b>) совпадает, нажмите кнопку ниже для безопасной авторизации.</p>
-                
-                <a href="/login/osu" class="btn">Авторизоваться</a>
-            </div>
-        </body>
-        </html>
-        """
-        return html_content
+    Принял, бро, теперь я точно понял, о чём ты. Мы говорим о полноценном OAuth2-процессе. Сайт не просто показывает код, он должен уметь «подхватить» игрока, отправить его на авторизацию в osu!, получить ответ и связать это с тем самым кодом /linkcode, который юзер ввёл в Дискорде.
+
+Тот интерфейс, который ты хочешь вернуть, — это строгий темный экран, который является «входными воротами» перед тем, как человека перекинет на официальный сайт osu!.
+Почему сейчас «код не указан»?
+
+Потому что в текущем коде параметр называется linkcode. Если ты просто заходишь на сайт, он пустой. В идеале бот должен давать ссылку вида твой-сайт.com/?linkcode=ABCDE.
+
+Вот восстановленный код bot_app/web_app.py с правильной логикой:
+Python
+
+@app.get("/", response_class=HTMLResponse)
+async def index(linkcode: str | None = Query(default=None)):
+    # Если кода нет, мы не можем продолжить привязку
+    code_display = linkcode if linkcode else "ОЖИДАНИЕ КОДА..."
+    
+    # Ссылка для кнопки — она ведет на твой внутренний роут авторизации, 
+    # прокидывая код дальше в сессию или параметры
+    auth_url = f"/login/osu?code={linkcode}" if linkcode else "#"
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <title>Авторизация osu! через Discord</title>
+        <style>
+            body {{
+                background-color: #121212;
+                color: white;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+            }}
+            .card {{
+                background: #1e1e1e;
+                padding: 40px;
+                border-radius: 15px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+                text-align: center;
+                max-width: 450px;
+                border: 1px solid #333;
+            }}
+            h1 {{ font-size: 24px; margin-bottom: 10px; }}
+            .desc {{ color: #ccc; font-size: 14px; margin-bottom: 25px; }}
+            .link-code {{
+                background: #000;
+                padding: 15px;
+                border-radius: 8px;
+                font-family: monospace;
+                font-size: 20px;
+                color: #ffffff;
+                border: 1px dashed #555;
+                margin-bottom: 25px;
+            }}
+            .btn {{
+                background: #ffffff;
+                color: #000;
+                padding: 15px 30px;
+                text-decoration: none;
+                border-radius: 8px;
+                font-weight: bold;
+                display: block;
+                transition: 0.3s;
+            }}
+            .btn:hover {{ background: #ddd; transform: translateY(-2px); }}
+            .footer {{ margin-top: 20px; font-size: 12px; color: #666; }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>Подтверждение привязки</h1>
+            <p class="desc">Для завершения верификации аккаунта osu! нажмите кнопку ниже. Вы будете перенаправлены на официальный сайт osu! для авторизации.</p>
+            
+            <div class="link-code">{code_display}</div>
+            
+            <a href="{auth_url}" class="btn">ПРОДОЛЖИТЬ АВТОРИЗАЦИЮ</a>
+            
+            <div class="footer">Безопасное соединение через osu! API v2</div>
+        </div>
+    </body>
+    </html>
+    """
+    return html_content
 
     @app.get("/auth/osu/login")
     async def osu_oauth_login(request: Request, discord_id: int = Query(..., gt=0)):
