@@ -309,21 +309,34 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
             if not osu_user_id:
                 raise HTTPException(status_code=400, detail="Could not fetch osu! user info")
 
-            # 4. Сохраняем связку (Используем Supabase, если он настроен)
+            # 4. Сохраняем связку.
+            # Если Supabase SDK не настроен/невалиден, используем прямой SQL через DATABASE_URL.
+            saved = False
             sb = get_supabase()
-            if sb is None:
-                return HTMLResponse(
-                    content="<h1>Supabase не настроен</h1><p>Проверьте SUPABASE_URL и SUPABASE_KEY в Render.</p>",
-                    status_code=500,
-                )
-            sb.table("users").upsert(
-                {
-                    "discord_id": int(discord_id),
-                    "osu_id": int(osu_user_id),
-                    "osu_username": osu_username,
-                    "verified_at": int(time.time()),
-                }
-            ).execute()
+            if sb is not None:
+                sb.table("users").upsert(
+                    {
+                        "discord_id": int(discord_id),
+                        "osu_id": int(osu_user_id),
+                        "osu_username": osu_username,
+                        "verified_at": int(time.time()),
+                    }
+                ).execute()
+                saved = True
+            if not saved:
+                async with get_db_conn() as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO users (discord_id, osu_username, osu_id)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (discord_id) DO UPDATE SET
+                            osu_username = EXCLUDED.osu_username,
+                            osu_id = EXCLUDED.osu_id
+                        """,
+                        int(discord_id),
+                        str(osu_username),
+                        int(osu_user_id),
+                    )
 
             logger.info(f"Success! Linked Discord:{discord_id} to osu!:{osu_username}")
 
