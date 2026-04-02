@@ -95,4 +95,38 @@ async def init_db():
                 expires_at BIGINT NOT NULL
             );
         """)
+        # Backward-compatible migrations for existing deployments.
+        await _ensure_column(conn, "verification_challenges", "mode", "TEXT NOT NULL DEFAULT 'osu'")
+        await _ensure_column(conn, "verification_challenges", "profile_token", "TEXT NOT NULL DEFAULT ''")
+        await _ensure_column(conn, "verification_challenges", "status", "TEXT NOT NULL DEFAULT 'pending'")
+        await _ensure_column(conn, "verification_challenges", "created_at", "BIGINT NOT NULL DEFAULT 0")
+        await _ensure_column(conn, "verification_challenges", "expires_at", "BIGINT NOT NULL DEFAULT 0")
+        await _ensure_column(
+            conn,
+            "verification_challenges",
+            "verification_source",
+            "TEXT NOT NULL DEFAULT 'bio'",
+        )
+        await _ensure_column(conn, "verification_challenges", "link_code", "TEXT")
+
+        await _ensure_column(conn, "pending_role_assignments", "status", "TEXT NOT NULL DEFAULT 'pending'")
+        await _ensure_column(conn, "pending_role_assignments", "error_message", "TEXT")
+        await _ensure_column(conn, "pending_role_assignments", "created_at", "BIGINT NOT NULL DEFAULT 0")
+        await _ensure_column(conn, "pending_role_assignments", "processed_at", "BIGINT")
         print("База данных Supabase успешно инициализирована.")
+
+
+async def _ensure_column(conn: asyncpg.Connection, table: str, column: str, spec: str) -> None:
+    exists = await conn.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = $1 AND column_name = $2
+        )
+        """,
+        table,
+        column,
+    )
+    if not exists:
+        await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
