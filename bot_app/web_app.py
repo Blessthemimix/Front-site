@@ -350,13 +350,24 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
             link_code = secrets.token_hex(3).upper()
             now = int(time.time())
             expires = now + settings.verification_token_ttl_seconds
+            # verification_challenges in some deployments uses discord_id as PRIMARY KEY.
+            # To be backward-compatible, we upsert by discord_id and treat discord_id as challenge_id.
             async with get_db_conn() as conn:
-                row = await conn.fetchrow(
+                await conn.execute(
                     """
                     INSERT INTO verification_challenges
                     (discord_id, osu_id, osu_username, mode, profile_token, status, created_at, expires_at, verification_source, link_code)
                     VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, 'oauth', $8)
-                    RETURNING id
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                        osu_id=EXCLUDED.osu_id,
+                        osu_username=EXCLUDED.osu_username,
+                        mode=EXCLUDED.mode,
+                        profile_token=EXCLUDED.profile_token,
+                        status=EXCLUDED.status,
+                        created_at=EXCLUDED.created_at,
+                        expires_at=EXCLUDED.expires_at,
+                        verification_source=EXCLUDED.verification_source,
+                        link_code=EXCLUDED.link_code
                     """,
                     int(discord_id),
                     int(osu_user_id),
@@ -367,7 +378,7 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
                     expires,
                     link_code,
                 )
-            challenge_id = int(row["id"])
+            challenge_id = int(discord_id)
 
             logger.info(f"Success! Linked Discord:{discord_id} to osu!:{osu_username} challenge={challenge_id}")
 
@@ -395,9 +406,9 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
         async with get_db_conn() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT id, discord_id, osu_id, osu_username, mode, status, expires_at
+                SELECT discord_id, osu_id, osu_username, mode, status, expires_at
                 FROM verification_challenges
-                WHERE id=$1
+                WHERE discord_id=$1
                 """,
                 int(challenge_id),
             )
@@ -447,8 +458,8 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
                 now,
             )
             await conn.execute(
-                "UPDATE verification_challenges SET status='done' WHERE id=$1",
-                int(challenge_id),
+                "UPDATE verification_challenges SET status='done' WHERE discord_id=$1",
+                int(row["discord_id"]),
             )
         return HTMLResponse(
             content=f"<h1>Готово</h1><p>Роль поставлена в очередь. mode={row['mode']} digit={digit} role_id={role_id}</p>",

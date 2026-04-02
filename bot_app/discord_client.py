@@ -102,7 +102,7 @@ def register_commands(bot: RoleBot) -> None:
         code = code.strip().upper()
         async with get_db_conn() as db_conn:
             row = await db_conn.fetchrow(
-                "SELECT id, osu_username, discord_id FROM verification_challenges WHERE link_code = $1 AND status = 'pending'",
+                "SELECT osu_username, discord_id FROM verification_challenges WHERE link_code = $1 AND status = 'pending'",
                 code,
             )
 
@@ -110,7 +110,7 @@ def register_commands(bot: RoleBot) -> None:
                 await interaction.response.send_message(f"❌ Код `{code}` не найден.", ephemeral=True)
                 return
 
-            challenge_id, osu_name, expected_discord_id = row["id"], row["osu_username"], row["discord_id"]
+            osu_name, expected_discord_id = row["osu_username"], row["discord_id"]
             if expected_discord_id and int(expected_discord_id) != int(interaction.user.id):
                 await interaction.response.send_message("❌ Этот код выдан другому Discord ID.", ephemeral=True)
                 return
