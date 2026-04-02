@@ -15,7 +15,7 @@ async def build_web_app():
     """Build FastAPI app with configured dependencies."""
     setup_logging()
     settings = load_settings(require_discord=False, require_osu=False, require_webhook=False)
-    await init_db(settings.database_path)
+    await init_db()
     osu_client = OsuClient(
         settings.osu_client_id, settings.osu_client_secret, cache_ttl=settings.osu_cache_ttl_seconds
     )
