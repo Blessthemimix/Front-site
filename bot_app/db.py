@@ -13,6 +13,8 @@ else:
     print(f"DATABASE_URL загружена, начинается на: {DATABASE_URL[:15]}...")
 
 async def get_db_conn():
+    """Создает подключение к PostgreSQL."""
+    return await asyncpg.connect(DATABASE_URL)
 
 async def init_db():
     """Создает все необходимые таблицы в Supabase."""
