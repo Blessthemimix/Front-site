@@ -30,7 +30,8 @@ class Settings:
     role_mapping_path: str
     osu_redirect_uri: str
     cors_origins: str
-
+    supabase_url: str  
+    supabase_key: str  
 
 def _osu_redirect_from_base(base_url: str) -> str:
     return base_url.rstrip("/") + "/auth/osu/callback"
@@ -46,7 +47,6 @@ def _required(name: str) -> str:
 def load_settings(
     *, require_discord: bool = True, require_osu: bool = True, require_webhook: bool = True
 ) -> Settings:
-    """Load settings from environment variables."""
     load_dotenv()
     discord_bot_token = _required("DISCORD_BOT_TOKEN") if require_discord else os.getenv("DISCORD_BOT_TOKEN", "")
     discord_guild_raw = _required("DISCORD_GUILD_ID") if require_discord else os.getenv("DISCORD_GUILD_ID", "0")
@@ -55,6 +55,9 @@ def load_settings(
     webhook_secret = _required("WEBHOOK_SECRET") if require_webhook else os.getenv("WEBHOOK_SECRET", "")
     base_url = os.getenv("BASE_URL", "http://localhost:8000")
     redirect = os.getenv("OSU_REDIRECT_URI", "").strip() or _osu_redirect_from_base(base_url)
+    supabase_url = _required("SUPABASE_URL")
+    supabase_key = _required("SUPABASE_KEY")
+
     return Settings(
         discord_bot_token=discord_bot_token,
         discord_guild_id=int(discord_guild_raw),
@@ -73,6 +76,8 @@ def load_settings(
         role_mapping_path=os.getenv("ROLE_MAPPING_PATH", "./config/role_mapping.json"),
         osu_redirect_uri=redirect,
         cors_origins=os.getenv("CORS_ORIGINS", "").strip(),
+        supabase_url=supabase_url,
+        supabase_key=supabase_key
     )
 
 
