@@ -31,14 +31,7 @@ def build_authorize_url(
     return f"{OSU_AUTHORIZE}?{q}"
 
 
-async def exchange_authorization_code(
-    *,
-    client_id: str,
-    client_secret: str,
-    code: str,
-    redirect_uri: str,
-    http: httpx.AsyncClient | None = None,
-) -> dict:
+async def exchange_authorization_code(client_id: str, client_secret: str, code: str, redirect_uri: str, http: httpx.AsyncClient | None = None): -> dict:
     """Exchange OAuth code for tokens (server-side)."""
     own = http is None
     client = http or httpx.AsyncClient(timeout=20.0)

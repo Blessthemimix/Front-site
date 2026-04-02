@@ -207,7 +207,12 @@ def create_web_app(
             await db.execute("DELETE FROM oauth_osu_states WHERE state=?", (state,))
             await db.commit()
 
-        tokens = await exchange_authorization_code(str(settings.osu_client_id), str(settings.osu_client_secret), code, settings.osu_redirect_uri)
+        tokens = await exchange_authorization_code(
+    client_id=str(settings.osu_client_id), 
+    client_secret=str(settings.osu_client_secret), 
+    code=code, 
+    redirect_uri=settings.osu_redirect_uri
+)
         me = await fetch_me(tokens["access_token"])
         osu_id, username, mode = int(me["id"]), me["username"], me.get("playmode", "osu")
         
