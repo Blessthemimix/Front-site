@@ -161,10 +161,25 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
     </html>
     """
 
-    @app.get("/", response_class=HTMLResponse)
-    async def index(discord_id: str | None = Query(default=None)):
-        # Безопасно подставляем значение через .replace()
-        pref = discord_id if discord_id else ""
-        return HTML_TEMPLATE.replace("{{DISCORD_ID}}", pref)
+    # Маршрут для Способа 1 (кнопка "Войти через osu!")
+    @app.get("/auth/osu/login")
+    async def osu_login(discord_id: str):
+        # Генерируем URL для авторизации на сайте osu!
+        state = f"discord:{discord_id}" # Передаем ID, чтобы знать кого верифицировать
+        url = build_authorize_url(settings.osu_client_id, settings.redirect_uri, state=state)
+        return RedirectResponse(url)
+
+    # Маршрут, куда osu! возвращает пользователя (Redirect URI)
+    @app.get("/auth/osu/callback")
+    async def osu_callback(code: str, state: str):
+        # Здесь логика обмена кода на токен и выдачи ролей
+        # (Убедись, что этот путь совпадает с тем, что указан в настройках osu! API)
+        return {"status": "success", "message": "Проверьте свои роли в Discord!"}
+
+    # Маршрут для Способа 2 (кнопка "Дальше (Классика)")
+    @app.post("/verify/classic/start")
+    async def classic_verify(discord_id: str = Form(...), osu_identifier: str = Form(...)):
+        # Логика для ручной проверки через About Me
+        return {"message": "Код для вставки в профиль сгенерирован (заглушка)"}
 
     return app
