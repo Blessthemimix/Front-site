@@ -282,8 +282,8 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
             if not osu_user_id:
                 raise HTTPException(status_code=400, detail="Could not fetch osu! user info")
 
-            # 4. Сохраняем связку в базу данных Supabase
-           supabase.table("users").upsert({
+            # 4. Сохраняем связку (Используем глобальный клиент supabase)
+            supabase.table("users").upsert({
                 "discord_id": int(discord_id),
                 "osu_id": int(osu_user_id),
                 "osu_username": osu_username,
