@@ -1,30 +1,32 @@
 import os
 import asyncpg
 from dotenv import load_dotenv
-from contextlib import asynccontextmanager # 1. Добавляем этот импорт
+from contextlib import asynccontextmanager
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Отладка загрузки URL
 if not DATABASE_URL:
     print("КРИТИЧЕСКАЯ ОШИБКА: Переменная DATABASE_URL не найдена в окружении!")
 else:
     print(f"DATABASE_URL загружена, начинается на: {DATABASE_URL[:15]}...")
 
-# 2. Добавляем декоратор и аргументы в скобки
 @asynccontextmanager
 async def get_db_conn(url: str = None, key: str = None):
-    """Создает подключение к PostgreSQL и автоматически закрывает его."""
+    """
+    Создает подключение к PostgreSQL. 
+    Аргументы url и key добавлены для совместимости с вызовами из других модулей.
+    """
     conn = await asyncpg.connect(DATABASE_URL)
     try:
-        yield conn # 3. Используем yield вместо return
+        yield conn
     finally:
-        await conn.close() # Автоматическое закрытие
+        await conn.close()
 
 async def init_db():
     """Создает все необходимые таблицы в Supabase."""
-    # 4. Здесь тоже меняем вызов на async with
     async with get_db_conn() as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -32,7 +34,66 @@ async def init_db():
                 osu_username TEXT NOT NULL,
                 osu_id BIGINT NOT NULL
             );
-            -- ... (весь остальной твой SQL код без изменений) ...
+
+            CREATE TABLE IF NOT EXISTS discord_link_codes (
+                discord_id BIGINT PRIMARY KEY,
+                code TEXT NOT NULL,
+                expires_at BIGINT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS verified_discord_links (
+                discord_id BIGINT PRIMARY KEY,
+                verified_at BIGINT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS osu_claims (
+                osu_id BIGINT PRIMARY KEY,
+                discord_id BIGINT NOT NULL,
+                claimed_at BIGINT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS verification_challenges (
+                id SERIAL PRIMARY KEY,
+                discord_id BIGINT NOT NULL,
+                osu_id BIGINT NOT NULL,
+                osu_username TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                profile_token TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at BIGINT NOT NULL,
+                expires_at BIGINT NOT NULL,
+                verification_source TEXT NOT NULL DEFAULT 'bio',
+                link_code TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS pending_role_assignments (
+                id SERIAL PRIMARY KEY,
+                discord_id BIGINT NOT NULL,
+                osu_id BIGINT NOT NULL,
+                osu_username TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                digit_value INTEGER NOT NULL,
+                role_id BIGINT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error_message TEXT,
+                created_at BIGINT NOT NULL,
+                processed_at BIGINT
+            );
+
+            CREATE TABLE IF NOT EXISTS maps (
+                map_id BIGINT PRIMARY KEY,
+                title TEXT NOT NULL,
+                artist TEXT NOT NULL,
+                sr REAL NOT NULL,
+                mode TEXT NOT NULL,
+                image_url TEXT,
+                bpm REAL,
+                key_count INTEGER,
+                circles INTEGER,
+                sliders INTEGER,
+                length INTEGER
+            );
+
             CREATE TABLE IF NOT EXISTS oauth_osu_states (
                 state TEXT PRIMARY KEY,
                 discord_id BIGINT NOT NULL,
@@ -41,5 +102,3 @@ async def init_db():
             );
         """)
         print("База данных Supabase успешно инициализирована.")
-    finally:
-        await conn.close()
