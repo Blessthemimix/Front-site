@@ -79,6 +79,6 @@ typing_extensions==4.15.0
 urllib3==2.6.3
 uvicorn==0.42.0
 watchfiles==1.1.1
-websockets
+websockets<16.0,>=11.0
 Werkzeug==3.1.5
 yarl==1.23.0
