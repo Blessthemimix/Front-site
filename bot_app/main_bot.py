@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from .config import load_role_mapping, load_settings
 from .db import init_db
 from .discord_client import RoleBot, register_commands
@@ -13,7 +15,10 @@ async def run_bot() -> None:
     """Initialize and run Discord bot."""
     setup_logging()
     settings = load_settings()
-    await init_db(settings.database_path)
+    # Local bot runs often have unstable connections to Supabase pooler.
+    # The web service already runs migrations; allow skipping here.
+    if os.getenv("RUN_DB_MIGRATIONS", "").strip() in {"1", "true", "True", "yes", "YES"}:
+        await init_db()
     role_mapping = load_role_mapping(settings.role_mapping_path)
     osu_client = OsuClient(
         settings.osu_client_id, settings.osu_client_secret, cache_ttl=settings.osu_cache_ttl_seconds
