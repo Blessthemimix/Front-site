@@ -99,6 +99,7 @@ def register_commands(bot: RoleBot) -> None:
 
     @bot.tree.command(name="linkcode", description="Связать Discord с профилем через код с сайта")
     async def linkcode(interaction: discord.Interaction, code: str) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=False)
         code = code.strip().upper()
         async with get_db_conn() as db_conn:
             row = await db_conn.fetchrow(
@@ -107,12 +108,12 @@ def register_commands(bot: RoleBot) -> None:
             )
 
             if row is None:
-                await interaction.response.send_message(f"❌ Код `{code}` не найден.", ephemeral=True)
+                await interaction.followup.send(f"❌ Код `{code}` не найден.", ephemeral=True)
                 return
 
             osu_name, expected_discord_id = row["osu_username"], row["discord_id"]
             if expected_discord_id and int(expected_discord_id) != int(interaction.user.id):
-                await interaction.response.send_message("❌ Этот код выдан другому Discord ID.", ephemeral=True)
+                await interaction.followup.send("❌ Этот код выдан другому Discord ID.", ephemeral=True)
                 return
             await db_conn.execute(
                 """
@@ -123,7 +124,7 @@ def register_commands(bot: RoleBot) -> None:
                 int(interaction.user.id),
                 int(time.time()),
             )
-        await interaction.response.send_message(f"✅ Аккаунт **{osu_name}** привязан!", ephemeral=True)
+        await interaction.followup.send(f"✅ Аккаунт **{osu_name}** привязан!", ephemeral=True)
 
     @bot.command(name="sync")
     @commands.is_owner()

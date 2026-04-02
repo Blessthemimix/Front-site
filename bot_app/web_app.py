@@ -265,6 +265,77 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
     </html>
     """
 
+    FINALIZE_TEMPLATE = """
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Верификация завершена</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                background: #0f0f0f;
+                color: #fff;
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }
+            .container {
+                background: #111;
+                border: 1px solid #222;
+                border-radius: 20px;
+                padding: 40px;
+                max-width: 520px;
+                width: 100%;
+                text-align: center;
+                box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+            }
+            .icon {
+                font-size: 68px;
+                color: #4ade80;
+                margin-bottom: 16px;
+            }
+            h1 { font-size: 34px; margin-bottom: 14px; }
+            p { color: #a3a3a3; line-height: 1.6; margin-bottom: 20px; }
+            .meta {
+                text-align: left;
+                background: #151515;
+                border: 1px solid #2a2a2a;
+                border-radius: 12px;
+                padding: 14px;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                font-size: 14px;
+                color: #d4d4d4;
+                margin-bottom: 18px;
+            }
+            .meta div { margin-bottom: 6px; }
+            .meta div:last-child { margin-bottom: 0; }
+            .hint {
+                color: #7dd3fc;
+                font-size: 14px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="icon">✓</div>
+            <h1>Готово</h1>
+            <p>Роль добавлена в очередь. Бот выдаст ее в Discord автоматически.</p>
+            <div class="meta">
+                <div>mode={{MODE}}</div>
+                <div>digit={{DIGIT}}</div>
+                <div>role_id={{ROLE_ID}}</div>
+            </div>
+            <div class="hint">Обычно это занимает несколько секунд.</div>
+        </div>
+    </body>
+    </html>
+    """
+
     @app.get("/", response_class=HTMLResponse)
     async def index(discord_id: str | None = Query(default=None)):
         pref = discord_id if discord_id else ""
@@ -461,10 +532,13 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
                 "UPDATE verification_challenges SET status='done' WHERE discord_id=$1",
                 int(row["discord_id"]),
             )
-        return HTMLResponse(
-            content=f"<h1>Готово</h1><p>Роль поставлена в очередь. mode={row['mode']} digit={digit} role_id={role_id}</p>",
-            status_code=200,
+        done_html = (
+            FINALIZE_TEMPLATE
+            .replace("{{MODE}}", str(row["mode"]))
+            .replace("{{DIGIT}}", str(digit))
+            .replace("{{ROLE_ID}}", str(role_id))
         )
+        return HTMLResponse(content=done_html, status_code=200)
 
     @app.get("/debug_verify")
     async def debug_verify(osu_identifier: str):

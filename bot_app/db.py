@@ -76,7 +76,12 @@ async def get_db_conn(url: str = None, key: str = None):
     try:
         yield conn
     finally:
-        await conn.close()
+        try:
+            await conn.close()
+        except OSError as exc:
+            # Windows can intermittently throw WinError 121 while closing pooled/network sockets.
+            # Connection is already unusable at this point, so we don't fail caller logic on close.
+            logger.warning("DB connection close warning: %s", exc)
 
 async def init_db():
     """Создает все необходимые таблицы в Supabase."""
