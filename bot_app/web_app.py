@@ -229,16 +229,34 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
         pref = discord_id if discord_id else ""
         return HTML_TEMPLATE.replace("{{DISCORD_ID}}", pref)
 
+    # ЭТОТ РОУТ НУЖНО ДОБАВИТЬ:
+    @app.get("/auth/osu/login")
+    async def osu_login(discord_id: str):
+        """
+        Перенаправляет пользователя на страницу авторизации osu!
+        """
+        # Формируем state, чтобы прокинуть discord_id в callback
+        state = f"discord:{discord_id}"
+        
+        # Строим URL для авторизации (используем твою функцию из osu_oauth)
+        auth_url = build_authorize_url(
+            client_id=settings.osu_client_id,
+            redirect_uri=settings.osu_redirect_uri,
+            state=state
+        )
+        return RedirectResponse(url=auth_url)
+
     @app.get("/auth/osu/callback", response_class=HTMLResponse)
     async def osu_callback(code: str, state: str):
         # 1. Извлекаем discord_id из параметра state
         if not state.startswith("discord:"):
+            logger.error(f"Invalid state received: {state}")
             raise HTTPException(status_code=400, detail="Invalid state parameter")
         
         discord_id = state.split(":")[1]
 
         try:
-            # 2. Обмениваем временный код на access_token
+            # 2. Обмениваем временный код на токены
             token_data = await exchange_authorization_code(
                 client_id=settings.osu_client_id,
                 client_secret=settings.osu_client_secret,
@@ -250,17 +268,16 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
             if not access_token:
                 raise HTTPException(status_code=400, detail="Failed to retrieve access token")
 
-            # 3. Получаем данные о пользователе osu! (id, username)
+            # 3. Запрашиваем данные профиля игрока
             user_data = await fetch_me(access_token)
             osu_user_id = user_data.get("id")
             osu_username = user_data.get("username")
 
             if not osu_user_id:
-                raise HTTPException(status_code=400, detail="Failed to fetch osu! user data")
+                raise HTTPException(status_code=400, detail="Could not fetch osu! user info")
 
             # 4. Сохраняем связку в базу данных Supabase
             async with get_db_conn(settings.supabase_url, settings.supabase_key) as db:
-                # Проверяем, нет ли уже такой привязки, и обновляем или создаем новую
                 await db.table("users").upsert({
                     "discord_id": discord_id,
                     "osu_id": str(osu_user_id),
@@ -268,14 +285,24 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
                     "verified_at": int(time.time())
                 }).execute()
 
-            logger.info(f"Successfully linked Discord {discord_id} with osu! {osu_username} ({osu_user_id})")
+            logger.info(f"Success! Linked Discord:{discord_id} to osu!:{osu_username}")
 
-            # 5. Возвращаем красивый UI
-            # Можно подставить никнейм в шаблон, если добавить {{USERNAME}} в SUCCESS_TEMPLATE
-            return HTMLResponse(content=SUCCESS_TEMPLATE.replace("<h1>Аккаунт успешно привязан!</h1>", f"<h1>{osu_username}, аккаунт привязан!</h1>"))
+            # 5. Возвращаем UI с ником игрока
+            final_html = SUCCESS_TEMPLATE.replace(
+                "<h1>Аккаунт успешно привязан!</h1>", 
+                f"<h1>{osu_username}, аккаунт привязан!</h1>"
+            )
+            return HTMLResponse(content=final_html)
 
         except Exception as e:
-            logger.error(f"Error during osu! callback: {e}")
-            raise HTTPException(status_code=500, detail="Internal Server Error during verification")
+            logger.exception("Error during osu! verification process")
+            return HTMLResponse(content="<h1>Ошибка верификации</h1><p>Попробуйте позже.</p>", status_code=500)
 
+    # --- Вариант для ручной проверки (classic) ---
+    @app.post("/verify/classic/start")
+    async def classic_verify(discord_id: str = Form(...), osu_identifier: str = Form(...)):
+        # Здесь будет твоя логика для Способа 2
+        return {"status": "in_progress", "message": "Logic not implemented yet"}
+
+    # ГЛАВНОЕ: return app находится ВНЕ функций роутов, но ВНУТРИ create_web_app
     return app
