@@ -134,10 +134,9 @@ def create_web_app(
     # --- РОУТЫ ---
 
     @app.get("/", response_class=HTMLResponse)
-async def index(discord_id: int | None = Query(default=None)):
-    pref = "" if discord_id is None else str(discord_id)
+    async def index(discord_id: int | None = Query(default=None)):
+         pref = "" if discord_id is None else str(discord_id)
     
-    # Тот самый красивый HTML, который я восстановил
     html_content = f"""
     <!DOCTYPE html>
     <html lang="ru">
