@@ -6,9 +6,13 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Добавь эту проверку для отладки:
+if not DATABASE_URL:
+    print("КРИТИЧЕСКАЯ ОШИБКА: Переменная DATABASE_URL не найдена в окружении!")
+else:
+    print(f"DATABASE_URL загружена, начинается на: {DATABASE_URL[:15]}...")
+
 async def get_db_conn():
-    """Создает подключение к PostgreSQL."""
-    return await asyncpg.connect(DATABASE_URL)
 
 async def init_db():
     """Создает все необходимые таблицы в Supabase."""
