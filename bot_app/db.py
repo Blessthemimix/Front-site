@@ -1,63 +1,75 @@
-"""SQLite storage and repository helpers."""
+import os
+import asyncpg
+from dotenv import load_dotenv
 
-from __future__ import annotations
+load_dotenv()
 
-from pathlib import Path
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-import aiosqlite
+async def get_db_conn():
+    """Создает подключение к PostgreSQL."""
+    return await asyncpg.connect(DATABASE_URL)
 
-
-async def init_db(database_path: str) -> None:
-    """Create required tables."""
-    db_file = Path(database_path)
-    db_file.parent.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(database_path) as db:
-        await db.executescript("""
+async def init_db():
+    """Создает все необходимые таблицы в Supabase."""
+    conn = await get_db_conn()
+    try:
+        # В PostgreSQL вместо INTEGER PRIMARY KEY AUTOINCREMENT используется SERIAL PRIMARY KEY
+        # Вместо INTEGER для Discord ID используем BIGINT (это критично!)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                discord_id INTEGER PRIMARY KEY,
+                discord_id BIGINT PRIMARY KEY,
                 osu_username TEXT NOT NULL,
-                osu_id INTEGER NOT NULL
+                osu_id BIGINT NOT NULL
             );
+
             CREATE TABLE IF NOT EXISTS discord_link_codes (
-                discord_id INTEGER PRIMARY KEY,
+                discord_id BIGINT PRIMARY KEY,
                 code TEXT NOT NULL,
-                expires_at INTEGER NOT NULL
+                expires_at BIGINT NOT NULL
             );
+
             CREATE TABLE IF NOT EXISTS verified_discord_links (
-                discord_id INTEGER PRIMARY KEY,
-                verified_at INTEGER NOT NULL
+                discord_id BIGINT PRIMARY KEY,
+                verified_at BIGINT NOT NULL
             );
+
             CREATE TABLE IF NOT EXISTS osu_claims (
-                osu_id INTEGER PRIMARY KEY,
-                discord_id INTEGER NOT NULL,
-                claimed_at INTEGER NOT NULL
+                osu_id BIGINT PRIMARY KEY,
+                discord_id BIGINT NOT NULL,
+                claimed_at BIGINT NOT NULL
             );
+
             CREATE TABLE IF NOT EXISTS verification_challenges (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                discord_id INTEGER NOT NULL,
-                osu_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY,
+                discord_id BIGINT NOT NULL,
+                osu_id BIGINT NOT NULL,
                 osu_username TEXT NOT NULL,
                 mode TEXT NOT NULL,
                 profile_token TEXT NOT NULL,
                 status TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL
+                created_at BIGINT NOT NULL,
+                expires_at BIGINT NOT NULL,
+                verification_source TEXT NOT NULL DEFAULT 'bio',
+                link_code TEXT
             );
+
             CREATE TABLE IF NOT EXISTS pending_role_assignments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                discord_id INTEGER NOT NULL,
-                osu_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY,
+                discord_id BIGINT NOT NULL,
+                osu_id BIGINT NOT NULL,
                 osu_username TEXT NOT NULL,
                 mode TEXT NOT NULL,
                 digit_value INTEGER NOT NULL,
-                role_id INTEGER NOT NULL,
+                role_id BIGINT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 error_message TEXT,
-                created_at INTEGER NOT NULL,
-                processed_at INTEGER
+                created_at BIGINT NOT NULL,
+                processed_at BIGINT
             );
+
             CREATE TABLE IF NOT EXISTS maps (
-                map_id INTEGER PRIMARY KEY,
+                map_id BIGINT PRIMARY KEY,
                 title TEXT NOT NULL,
                 artist TEXT NOT NULL,
                 sr REAL NOT NULL,
@@ -69,26 +81,14 @@ async def init_db(database_path: str) -> None:
                 sliders INTEGER,
                 length INTEGER
             );
+
             CREATE TABLE IF NOT EXISTS oauth_osu_states (
                 state TEXT PRIMARY KEY,
-                discord_id INTEGER NOT NULL,
-                created_at INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL
+                discord_id BIGINT NOT NULL,
+                created_at BIGINT NOT NULL,
+                expires_at BIGINT NOT NULL
             );
-            """)
-        await _migrate_schema(db)
-        await db.commit()
-
-
-async def _migrate_schema(db: aiosqlite.Connection) -> None:
-    """Add columns/tables for older deployments."""
-    async with db.execute("PRAGMA table_info(verification_challenges)") as cursor:
-        cols = {row[1] for row in await cursor.fetchall()}
-    if "verification_source" not in cols:
-        await db.execute(
-            "ALTER TABLE verification_challenges ADD COLUMN verification_source TEXT NOT NULL DEFAULT 'bio'"
-        )
-        async with db.execute("PRAGMA table_info(verification_challenges)") as cursor:
-            cols = {row[1] for row in await cursor.fetchall()}
-    if "link_code" not in cols:
-        await db.execute("ALTER TABLE verification_challenges ADD COLUMN link_code TEXT")
+        """)
+        print("База данных Supabase успешно инициализирована.")
+    finally:
+        await conn.close()
