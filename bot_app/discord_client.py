@@ -23,6 +23,19 @@ def get_all_digit_role_ids(role_mapping: dict[str, dict[int, int]]) -> set[int]:
     """Flatten configured digit role IDs across modes."""
     return {role_id for mode_map in role_mapping.values() for role_id in mode_map.values()}
 
+
+async def _ambient_color_from_avatar(bot: "RoleBot", avatar_url: str | None) -> discord.Color:
+    """Extract a dominant color from avatar image for embed styling."""
+    if not avatar_url:
+        return discord.Color.blurple()
+    try:
+        response = await bot.osu_client._http.get(avatar_url)
+        response.raise_for_status()
+        color = ColorThief(BytesIO(response.content)).get_color(quality=1)
+        return discord.Color.from_rgb(*color)
+    except Exception:
+        return discord.Color.blurple()
+
 class RoleBot(commands.Bot):
     """Discord bot with slash commands and assignment worker."""
 
@@ -150,19 +163,49 @@ def register_commands(bot: RoleBot) -> None:
         if not user:
             await interaction.followup.send("Игрок не найден.")
             return
-        
-        embed = discord.Embed(title=f"Профиль {user['username']}", color=0xFF66AA)
-        embed.set_thumbnail(url=user['avatar_url'])
-        stats = user.get('statistics', {})
-        embed.add_field(name="Ранг", value=f"#{stats.get('global_rank', 0) or 0:,}")
-        embed.add_field(name="PP", value=f"{stats.get('pp', 0):,}")
+
+        stats = user.get("statistics") or {}
+        avatar_url = user.get("avatar_url")
+        ambient_color = await _ambient_color_from_avatar(bot, avatar_url)
+
+        country = (user.get("country") or {}).get("code", "")
+        title = f"{country} {user['username']}".strip()
+        embed = discord.Embed(title=title, color=ambient_color)
+        if avatar_url:
+            embed.set_thumbnail(url=avatar_url)
+
+        global_rank = stats.get("global_rank")
+        country_rank = stats.get("country_rank")
+        pp = stats.get("pp", 0)
+        level = (stats.get("level") or {}).get("current", 0)
+        hit_acc = stats.get("hit_accuracy", 0)
+        play_count = stats.get("play_count", 0)
+        play_time_h = int((stats.get("play_time") or 0) / 3600)
+
+        embed.description = (
+            f"**{pp:,.2f}pp**"
+            + (f" • #{global_rank:,}" if global_rank else "")
+            + (f" • {country}#{country_rank:,}" if country_rank and country else "")
+        )
+        embed.add_field(name="Accuracy", value=f"{hit_acc:.2f}%", inline=True)
+        embed.add_field(name="Level", value=f"{level}", inline=True)
+        embed.add_field(name="Play count", value=f"{play_count:,}", inline=True)
+        embed.add_field(name="Total hits", value=f"{stats.get('total_hits', 0):,}", inline=True)
+        embed.add_field(name="Max combo", value=f"{stats.get('maximum_combo', 0):,}", inline=True)
+        embed.add_field(name="Play time", value=f"{play_time_h:,} hrs", inline=True)
+        embed.add_field(name="Grade SSH", value=f"{(stats.get('grade_counts') or {}).get('ssh', 0):,}", inline=True)
+        embed.add_field(name="Grade SS", value=f"{(stats.get('grade_counts') or {}).get('ss', 0):,}", inline=True)
+        embed.add_field(name="Grade S", value=f"{(stats.get('grade_counts') or {}).get('s', 0):,}", inline=True)
+        if user.get("join_date"):
+            embed.set_footer(text=f"Joined osu!: {user['join_date'][:10]}")
+
         await interaction.followup.send(embed=embed)
 
     # --- РЕКОМЕНДАЦИИ (БЕЗ НОВОЙ ТАБЛИЦЫ) ---
 
-    @bot.tree.command(name="recommend", description="Случайная карта из вашего топ-100")
+    @bot.tree.command(name="recommend", description="Несколько рекомендаций из вашего топ-100")
     async def recommend(interaction: discord.Interaction):
-        """Выбирает случайную карту из топ-100 игрока через API."""
+        """Показывает несколько случайных карт из топ-100 игрока через API."""
         await interaction.response.defer()
         
         # Берем привязанный ID из твоей таблицы users
@@ -182,20 +225,33 @@ def register_commands(bot: RoleBot) -> None:
             return
 
         import random
-        score = random.choice(scores)
-        bm = score['beatmap']
-        bset = score['beatmapset']
-        
+        picks_count = min(5, len(scores))
+        picks = random.sample(scores, picks_count)
+
+        lines: list[str] = []
+        for idx, score in enumerate(picks, start=1):
+            bm = score.get("beatmap") or {}
+            bset = score.get("beatmapset") or {}
+            title = bset.get("title", "Unknown map")
+            version = bm.get("version", "?")
+            sr = bm.get("difficulty_rating", "?")
+            bpm = bm.get("bpm", "?")
+            pp = score.get("pp", "?")
+            url = f"https://osu.ppy.sh/b/{bm.get('id')}" if bm.get("id") else "https://osu.ppy.sh/"
+            lines.append(
+                f"**{idx}. [{title} [{version}]]({url})**\n"
+                f"⭐ {sr} • {pp}pp • BPM {bpm}"
+            )
+
         embed = discord.Embed(
-            title=f"Рекомендация для {username}",
-            description=f"Как насчет перепройти **{bset['title']}**?",
-            url=f"https://osu.ppy.sh/b/{bm['id']}",
-            color=0x3498DB
+            title=f"Персональные рекомендации для {username}",
+            description="\n\n".join(lines),
+            color=0x3498DB,
         )
-        embed.add_field(name="Сложность", value=f"[{bm['version']}]")
-        embed.add_field(name="SR", value=f"{bm['difficulty_rating']}⭐")
-        embed.set_thumbnail(url=bset['covers']['list@2x'])
-        
+        cover = (picks[0].get("beatmapset") or {}).get("covers", {}).get("list@2x")
+        if cover:
+            embed.set_thumbnail(url=cover)
+
         await interaction.followup.send(embed=embed)
 
     @bot.tree.command(name="top_list", description="Показать ваши лучшие карты")
