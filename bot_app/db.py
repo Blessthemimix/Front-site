@@ -1,9 +1,14 @@
+import asyncio
+import logging
 import os
+import socket
+from urllib.parse import urlparse, parse_qs, unquote
 import asyncpg
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -13,9 +18,61 @@ async def get_db_conn(url: str = None, key: str = None):
     Создает подключение к PostgreSQL. 
     Аргументы url и key добавлены для совместимости с вызовами из других модулей.
     """
+    if not DATABASE_URL:
+        raise ValueError("DATABASE_URL is not configured")
     # Supabase pooler (pgbouncer in transaction mode) is incompatible with
     # asyncpg prepared statement cache. Disable cache for stable connections.
-    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
+    def _parse_dsn(dsn: str) -> tuple[str, int, str, str, str, bool]:
+        p = urlparse(dsn)
+        host = p.hostname or ""
+        port = int(p.port or 5432)
+        user = unquote(p.username or "")
+        password = unquote(p.password or "")
+        dbname = (p.path or "").lstrip("/") or "postgres"
+        q = parse_qs(p.query or "")
+        sslmode = (q.get("sslmode", [""])[0] or "").lower()
+        ssl_required = sslmode == "require"
+        return host, port, user, password, dbname, ssl_required
+
+    async def _connect_ipv4_fallback(dsn: str) -> asyncpg.Connection:
+        host, port, user, password, dbname, ssl_required = _parse_dsn(dsn)
+        infos = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        ip = infos[0][4][0]
+        ssl = "require" if ssl_required else None
+        return await asyncpg.connect(
+            host=ip,
+            port=port,
+            user=user,
+            password=password,
+            database=dbname,
+            ssl=ssl,
+            statement_cache_size=0,
+            command_timeout=60,
+            timeout=20,
+        )
+
+    for attempt in range(1, 6):
+        try:
+            conn = await asyncpg.connect(
+                DATABASE_URL,
+                statement_cache_size=0,
+                command_timeout=60,
+                timeout=20,
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            # On some hosts IPv6 route can be unavailable; fall back to IPv4.
+            if isinstance(exc, OSError) and getattr(exc, "errno", None) == 101:
+                try:
+                    conn = await _connect_ipv4_fallback(DATABASE_URL)
+                    break
+                except Exception as exc2:  # noqa: BLE001
+                    exc = exc2
+            wait_s = min(2 * attempt, 10)
+            logger.warning("DB connect failed (attempt %s/5): %s", attempt, exc)
+            if attempt == 5:
+                raise
+            await asyncio.sleep(wait_s)
     try:
         yield conn
     finally:
