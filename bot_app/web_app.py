@@ -134,67 +134,68 @@ def create_web_app(
     # --- РОУТЫ ---
 
     @app.get("/", response_class=HTMLResponse)
-    async def index(discord_id: int | None = Query(default=None)):
-        # 1. СНАЧАЛА создаем переменную pref
-        pref = "" if discord_id is None else str(discord_id)
+    async def index(linkcode: str | None = Query(default=None)):
+        # Обрабатываем linkcode вместо discord_id
+        code_display = linkcode if linkcode else "Код не указан"
         
-        # 2. ЗАТЕМ создаем HTML (строка должна быть с отступом, внутри функции!)
         html_content = f"""
         <!DOCTYPE html>
         <html lang="ru">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>osu! Verification System</title>
-            <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;700&display=swap" rel="stylesheet">
+            <title>Верификация | Discord & osu!</title>
+            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
             <style>
                 body {{
                     margin: 0; padding: 0;
                     display: flex; justify-content: center; align-items: center;
                     min-height: 100vh;
-                    background: radial-gradient(circle, #2e1a2e 0%, #1a1a2e 100%);
-                    color: white; font-family: 'Exo 2', sans-serif;
+                    background-color: #121212;
+                    color: #ffffff; font-family: 'Inter', sans-serif;
                 }}
                 .container {{
-                    background: rgba(255, 255, 255, 0.05);
-                    padding: 40px; border-radius: 20px;
-                    backdrop-filter: blur(10px);
-                    border: 1px solid rgba(255, 255, 255, 0.1);
+                    background: #1e1e1e;
+                    padding: 40px 50px; border-radius: 12px;
+                    border: 1px solid #333;
                     text-align: center;
-                    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-                    max-width: 500px;
+                    box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+                    max-width: 400px; width: 100%;
                 }}
-                h1 {{ color: #ff66aa; margin-bottom: 10px; }}
-                .status {{
-                    margin: 20px 0; padding: 10px;
-                    background: rgba(0, 255, 150, 0.1);
-                    border: 1px solid #00ff96; border-radius: 10px;
-                    color: #00ff96; font-weight: bold;
+                h1 {{ margin-top: 0; font-size: 24px; font-weight: 600; letter-spacing: 0.5px; }}
+                p {{ color: #a0a0a0; line-height: 1.6; font-size: 15px; margin-bottom: 20px; }}
+                .code-box {{
+                    margin: 25px 0; padding: 15px;
+                    background: #0a0a0a;
+                    border: 1px solid #444; border-radius: 8px;
+                    font-size: 22px; font-weight: bold; letter-spacing: 3px;
+                    color: #ffffff;
                 }}
-                .discord-id {{ color: #ff66aa; font-weight: bold; font-size: 1.2em; }}
                 .btn {{
-                    display: inline-block; margin-top: 20px;
-                    padding: 12px 30px; background: #ff66aa;
-                    color: white; text-decoration: none;
-                    border-radius: 50px; font-weight: bold;
-                    transition: 0.3s;
+                    display: inline-block; width: 100%;
+                    margin-top: 15px; padding: 14px 0;
+                    background: #ffffff; color: #000000;
+                    text-decoration: none; border-radius: 6px;
+                    font-weight: 600; font-size: 16px;
+                    transition: 0.2s; box-sizing: border-box;
                 }}
-                .btn:hover {{ background: #ff85bc; transform: scale(1.05); }}
+                .btn:hover {{ background: #d0d0d0; transform: translateY(-2px); }}
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>osu! Verifier</h1>
-                <div class="status">● Система онлайн</div>
-                <p>Ваш Discord ID: <span class="discord-id">{pref if pref else "Не определен"}</span></p>
-                <p>Для верификации используйте команду <strong>/verify</strong> в Discord.</p>
-                <a href="https://osu.ppy.sh" class="btn" target="_blank">На главную osu!</a>
+                <h1>Подтверждение</h1>
+                <p>Вы перешли по ссылке для привязки вашего аккаунта osu! к серверу Discord.</p>
+                
+                <div class="code-box">{code_display}</div>
+                
+                <p>Если ваш код (<b>/linkcode</b>) совпадает, нажмите кнопку ниже для безопасной авторизации.</p>
+                
+                <a href="/login/osu" class="btn">Авторизоваться</a>
             </div>
         </body>
         </html>
         """
-        
-        # 3. В самом конце функции возвращаем этот HTML
         return html_content
 
     @app.get("/auth/osu/login")
