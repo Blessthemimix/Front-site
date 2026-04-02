@@ -7,13 +7,13 @@ import time
 from io import BytesIO
 from typing import Any
 
-import aiosqlite
 import discord
 from colorthief import ColorThief
 from discord.ext import commands, tasks
 from discord import app_commands
 
 from .config import Settings
+from .db import get_db_conn
 from .osu_client import OsuClient
 from .verification import VerificationInput, compute_digit_value
 
@@ -54,14 +54,15 @@ class RoleBot(commands.Bot):
         guild = self.get_guild(self.settings.discord_guild_id)
         if guild is None:
             return
-        async with aiosqlite.connect(self.settings.database_path) as db_conn:
-            async with db_conn.execute("""
+        async with get_db_conn() as db_conn:
+            rows = await db_conn.fetch(
+                """
                 SELECT id, discord_id, role_id, osu_id, osu_username, mode, digit_value
                 FROM pending_role_assignments
                 WHERE status='pending'
                 ORDER BY id ASC LIMIT 20
-                """) as cursor:
-                rows = await cursor.fetchall()
+                """
+            )
             
             for row in rows:
                 assignment_id, discord_id, role_id, osu_id, osu_username, mode, digit = row
@@ -71,16 +72,18 @@ class RoleBot(commands.Bot):
                     if member and role:
                         await self._replace_digit_roles(member, role)
                         await db_conn.execute(
-                            "UPDATE pending_role_assignments SET status='done', processed_at=? WHERE id=?",
-                            (int(time.time()), assignment_id),
+                            "UPDATE pending_role_assignments SET status='done', processed_at=$1 WHERE id=$2",
+                            int(time.time()),
+                            assignment_id,
                         )
                 except Exception as exc:
                     logger.error(f"Failed to assign role: {exc}")
                     await db_conn.execute(
-                        "UPDATE pending_role_assignments SET status='failed', processed_at=?, error_message=? WHERE id=?",
-                        (int(time.time()), str(exc), assignment_id),
+                        "UPDATE pending_role_assignments SET status='failed', processed_at=$1, error_message=$2 WHERE id=$3",
+                        int(time.time()),
+                        str(exc),
+                        assignment_id,
                     )
-            await db_conn.commit()
 
     async def _replace_digit_roles(self, member: discord.Member, target_role: discord.Role) -> None:
         role_ids = get_all_digit_role_ids(self.role_mapping)
@@ -97,20 +100,29 @@ def register_commands(bot: RoleBot) -> None:
     @bot.tree.command(name="linkcode", description="Связать Discord с профилем через код с сайта")
     async def linkcode(interaction: discord.Interaction, code: str) -> None:
         code = code.strip().upper()
-        async with aiosqlite.connect(bot.settings.database_path) as db_conn:
-            async with db_conn.execute(
-                "SELECT id, osu_username FROM verification_challenges WHERE link_code = ? AND status = 'pending'", 
-                (code,)
-            ) as cursor:
-                row = await cursor.fetchone()
+        async with get_db_conn() as db_conn:
+            row = await db_conn.fetchrow(
+                "SELECT id, osu_username, discord_id FROM verification_challenges WHERE link_code = $1 AND status = 'pending'",
+                code,
+            )
 
             if row is None:
                 await interaction.response.send_message(f"❌ Код `{code}` не найден.", ephemeral=True)
                 return
 
-            challenge_id, osu_name = row
-            await db_conn.execute("UPDATE verification_challenges SET discord_id = ? WHERE id = ?", (interaction.user.id, challenge_id))
-            await db_conn.commit()
+            challenge_id, osu_name, expected_discord_id = row["id"], row["osu_username"], row["discord_id"]
+            if expected_discord_id and int(expected_discord_id) != int(interaction.user.id):
+                await interaction.response.send_message("❌ Этот код выдан другому Discord ID.", ephemeral=True)
+                return
+            await db_conn.execute(
+                """
+                INSERT INTO verified_discord_links (discord_id, verified_at)
+                VALUES ($1, $2)
+                ON CONFLICT (discord_id) DO UPDATE SET verified_at=EXCLUDED.verified_at
+                """,
+                int(interaction.user.id),
+                int(time.time()),
+            )
         await interaction.response.send_message(f"✅ Аккаунт **{osu_name}** привязан!", ephemeral=True)
 
     @bot.command(name="sync")
@@ -126,10 +138,9 @@ def register_commands(bot: RoleBot) -> None:
         await interaction.response.defer()
         target = username
         if not target:
-            async with aiosqlite.connect(bot.settings.database_path) as db_conn:
-                async with db_conn.execute("SELECT osu_username FROM users WHERE discord_id=?", (interaction.user.id,)) as cursor:
-                    row = await cursor.fetchone()
-            if row: target = row[0]
+            async with get_db_conn() as db_conn:
+                row = await db_conn.fetchrow("SELECT osu_username FROM users WHERE discord_id=$1", int(interaction.user.id))
+            if row: target = row["osu_username"]
             else:
                 await interaction.followup.send("Укажите ник или привяжите профиль.")
                 return
@@ -154,15 +165,14 @@ def register_commands(bot: RoleBot) -> None:
         await interaction.response.defer()
         
         # Берем привязанный ID из твоей таблицы users
-        async with aiosqlite.connect(bot.settings.database_path) as db_conn:
-            async with db_conn.execute("SELECT osu_id, osu_username FROM users WHERE discord_id=?", (interaction.user.id,)) as cursor:
-                row = await cursor.fetchone()
+        async with get_db_conn() as db_conn:
+            row = await db_conn.fetchrow("SELECT osu_id, osu_username FROM users WHERE discord_id=$1", int(interaction.user.id))
         
         if not row:
             await interaction.followup.send("Сначала привяжите профиль через `/setprofile` или сайт.")
             return
             
-        osu_id, username = row
+        osu_id, username = row["osu_id"], row["osu_username"]
         
         # Запрос в osu! API напрямую (в логах видно, что это работает)
         scores = await bot.osu_client.request(f"users/{osu_id}/scores/best?limit=100")
@@ -191,15 +201,14 @@ def register_commands(bot: RoleBot) -> None:
     async def top_list(interaction: discord.Interaction):
         """Просто показывает список ваших лучших карт без сохранения в базу."""
         await interaction.response.defer()
-        async with aiosqlite.connect(bot.settings.database_path) as db_conn:
-            async with db_conn.execute("SELECT osu_id FROM users WHERE discord_id=?", (interaction.user.id,)) as cursor:
-                row = await cursor.fetchone()
+        async with get_db_conn() as db_conn:
+            row = await db_conn.fetchrow("SELECT osu_id FROM users WHERE discord_id=$1", int(interaction.user.id))
         
         if not row:
             await interaction.followup.send("Профиль не привязан.")
             return
 
-        scores = await bot.osu_client.request(f"users/{row[0]}/scores/best?limit=5")
+        scores = await bot.osu_client.request(f"users/{row['osu_id']}/scores/best?limit=5")
         if not scores:
             await interaction.followup.send("Ошибочка при получении топа.")
             return

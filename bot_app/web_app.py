@@ -8,6 +8,7 @@ from .config import Settings
 from .osu_client import OsuClient
 from .osu_oauth import build_authorize_url, exchange_authorization_code, fetch_me
 from .db import get_db_conn
+from .verification import VerificationInput, compute_digit_value
 import os
 import typing
 
@@ -250,8 +251,15 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
             <div class="icon">✓</div>
             <div class="logo">VERIFIED</div>
             <h1>Аккаунт успешно привязан!</h1>
-            <p>Ваш профиль osu! успешно соединен с Discord. Роли будут выданы автоматически в течение нескольких минут.</p>
-            <a href="https://discord.com/app" class="btn">Вернуться в Discord</a>
+            <p>Ваш профиль osu! успешно соединен с Discord.</p>
+            <div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:14px;margin:16px 0;text-align:left;">
+                <div style="font-size:12px;color:#888;margin-bottom:8px;">Шаг 1: Подтвердите Discord</div>
+                <div style="font-family:monospace;font-size:22px;color:#60a5fa;">/linkcode {{LINK_CODE}}</div>
+            </div>
+            <form method="post" action="/verify/finalize">
+                <input type="hidden" name="challenge_id" value="{{CHALLENGE_ID}}" />
+                <button class="btn" type="submit">Шаг 2: Завершить и выдать роль</button>
+            </form>
         </div>
     </body>
     </html>
@@ -338,13 +346,37 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
                         int(osu_user_id),
                     )
 
-            logger.info(f"Success! Linked Discord:{discord_id} to osu!:{osu_username}")
+            mode = str(user_data.get("playmode", "osu"))
+            link_code = secrets.token_hex(3).upper()
+            now = int(time.time())
+            expires = now + settings.verification_token_ttl_seconds
+            async with get_db_conn() as conn:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO verification_challenges
+                    (discord_id, osu_id, osu_username, mode, profile_token, status, created_at, expires_at, verification_source, link_code)
+                    VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, 'oauth', $8)
+                    RETURNING id
+                    """,
+                    int(discord_id),
+                    int(osu_user_id),
+                    str(osu_username),
+                    mode,
+                    "oauth",
+                    now,
+                    expires,
+                    link_code,
+                )
+            challenge_id = int(row["id"])
+
+            logger.info(f"Success! Linked Discord:{discord_id} to osu!:{osu_username} challenge={challenge_id}")
 
             # 5. Возвращаем UI с ником игрока
             final_html = SUCCESS_TEMPLATE.replace(
                 "<h1>Аккаунт успешно привязан!</h1>", 
                 f"<h1>{osu_username}, аккаунт привязан!</h1>"
             )
+            final_html = final_html.replace("{{LINK_CODE}}", link_code).replace("{{CHALLENGE_ID}}", str(challenge_id))
             return HTMLResponse(content=final_html)
 
         except Exception as e:
@@ -356,6 +388,72 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
     async def classic_verify(discord_id: str = Form(...), osu_identifier: str = Form(...)):
         # Здесь будет твоя логика для Способа 2
         return {"status": "in_progress", "message": "Logic not implemented yet"}
+
+    @app.post("/verify/finalize")
+    async def finalize_verification(challenge_id: int = Form(...)):
+        now = int(time.time())
+        async with get_db_conn() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, discord_id, osu_id, osu_username, mode, status, expires_at
+                FROM verification_challenges
+                WHERE id=$1
+                """,
+                int(challenge_id),
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Challenge not found")
+            if row["status"] != "pending":
+                raise HTTPException(status_code=400, detail="Challenge already processed")
+            if now > int(row["expires_at"]):
+                raise HTTPException(status_code=410, detail="Challenge expired")
+            verified = await conn.fetchrow(
+                "SELECT 1 FROM verified_discord_links WHERE discord_id=$1",
+                int(row["discord_id"]),
+            )
+            if not verified:
+                raise HTTPException(status_code=403, detail="Сначала выполни /linkcode в Discord")
+
+        osu_user = await osu_client.request(f"users/{int(row['osu_id'])}")
+        if not osu_user:
+            raise HTTPException(status_code=502, detail="osu API unavailable")
+        global_rank = (osu_user.get("statistics") or {}).get("global_rank")
+        digit = compute_digit_value(
+            VerificationInput(
+                osu_id=int(row["osu_id"]),
+                username=str(row["osu_username"]),
+                global_rank=global_rank,
+            ),
+            settings.verification_mode,
+            digit_modulus=settings.digit_modulus,
+        )
+        role_id = role_mapping.get(str(row["mode"]), {}).get(digit)
+        if not role_id:
+            raise HTTPException(status_code=400, detail=f"No role for mode={row['mode']} digit={digit}")
+
+        async with get_db_conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO pending_role_assignments
+                (discord_id, osu_id, osu_username, mode, digit_value, role_id, status, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+                """,
+                int(row["discord_id"]),
+                int(row["osu_id"]),
+                str(row["osu_username"]),
+                str(row["mode"]),
+                int(digit),
+                int(role_id),
+                now,
+            )
+            await conn.execute(
+                "UPDATE verification_challenges SET status='done' WHERE id=$1",
+                int(challenge_id),
+            )
+        return HTMLResponse(
+            content=f"<h1>Готово</h1><p>Роль поставлена в очередь. mode={row['mode']} digit={digit} role_id={role_id}</p>",
+            status_code=200,
+        )
 
     # ГЛАВНОЕ: return app находится ВНЕ функций роутов, но ВНУТРИ create_web_app
     return app
