@@ -170,7 +170,7 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
     @app.get("/auth/osu/login")
     async def osu_login(discord_id: str):
         state = f"discord:{discord_id}" 
-        url = build_authorize_url(settings.osu_client_id, settings.redirect_uri, state=state)
+        url = build_authorize_url(settings.osu_client_id, settings.osu_redirect_uri, state=state)
         return RedirectResponse(url)
 
     # Маршрут, куда osu! возвращает пользователя (Redirect URI)
