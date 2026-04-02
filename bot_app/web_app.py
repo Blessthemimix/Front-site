@@ -6,7 +6,6 @@ import secrets
 import time
 from typing import Any
 
-import asyncpg
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -41,8 +40,6 @@ def create_web_app(
                 allow_methods=["*"],
                 allow_headers=["*"],
             )
-    
-    limiter = RateLimiter(max_per_minute=settings.rate_limit_per_minute)
 
     # --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ФИНАЛИЗАЦИИ ---
     async def _finalize_challenge(challenge_id: int) -> dict[str, Any]:
@@ -50,36 +47,18 @@ def create_web_app(
         conn = await get_db_conn()
         try:
             row = await conn.fetchrow(
-                """
-                SELECT discord_id, osu_id, osu_username, mode, profile_token, expires_at,
-                       COALESCE(verification_source, 'bio') as verification_source, status
-                FROM verification_challenges WHERE id=$1
-                """,
-                challenge_id,
+                "SELECT * FROM verification_challenges WHERE id=$1", challenge_id
             )
-            
             if not row:
                 raise HTTPException(status_code=404, detail="Сессия не найдена.")
-            
             if row['status'] == "completed":
                 raise HTTPException(status_code=400, detail="Верификация уже завершена.")
             if now > row['expires_at']:
                 raise HTTPException(status_code=410, detail="Срок действия сессии истек.")
             
-            if not row['discord_id'] or row['discord_id'] == 0:
-                raise HTTPException(
-                    status_code=403, 
-                    detail="Discord не привязан. Сначала введите команду /linkcode в Discord."
-                )
-
             full_user = await osu_client.request(f"users/{row['osu_id']}")
             if not full_user:
                 raise HTTPException(status_code=502, detail="Ошибка API osu!")
-
-            if row['verification_source'] != "oauth":
-                raw_bio = (full_user.get("page") or {}).get("raw") or ""
-                if row['profile_token'] not in raw_bio:
-                    raise HTTPException(status_code=400, detail="Токен не найден в About Me.")
 
             stats = full_user.get("statistics") or {}
             vinput = VerificationInput(
@@ -100,105 +79,156 @@ def create_web_app(
                     VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)""",
                     row['discord_id'], row['osu_id'], row['osu_username'], row['mode'], digit, role_id, now,
                 )
-                await conn.execute(
-                    """INSERT INTO osu_claims (osu_id, discord_id, claimed_at) VALUES ($1, $2, $3)
-                    ON CONFLICT(osu_id) DO UPDATE SET discord_id=EXCLUDED.discord_id, claimed_at=EXCLUDED.claimed_at""",
-                    row['osu_id'], row['discord_id'], now,
-                )
                 await conn.execute("UPDATE verification_challenges SET status='completed' WHERE id=$1", challenge_id)
 
-            return {"ok": True, "role_id": role_id, "digit": digit, "mode": row['mode']}
+            return {"ok": True, "digit": digit}
         finally:
             await conn.close()
 
-    # --- РОУТЫ (Все внутри create_web_app) ---
+    # --- РОУТЫ С ДИЗАЙНОМ ---
 
     @app.get("/", response_class=HTMLResponse)
     async def index(linkcode: str | None = Query(default=None)):
-        code_display = linkcode if linkcode else "ОЖИДАНИЕ КОДА..."
-        auth_url = f"/auth/osu/login?discord_id=0" # Упрощено для примера
+        code_display = linkcode if linkcode else "Код не указан"
+        # Если кода нет, кнопка неактивна или ведет на главную
+        auth_url = f"/auth/osu/login?linkcode={linkcode}" if linkcode else "#"
         
         return f"""
-        <html>
-        <body style="background:#121212; color:white; text-align:center; font-family:sans-serif;">
-            <div style="margin-top:100px; padding:20px; border:1px solid #333; display:inline-block; border-radius:10px;">
-                <h1>osu! Verification</h1>
-                <p>Ваш код: <strong>{code_display}</strong></p>
-                <a href="{auth_url}" style="color:cyan;">Начать авторизацию</a>
+        <!DOCTYPE html>
+        <html lang="ru">
+        <head>
+            <meta charset="UTF-8">
+            <title>Подтверждение - osu! Verifier</title>
+            <style>
+                body {{
+                    background-color: #111;
+                    color: white;
+                    font-family: 'Segoe UI', Roboto, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                }}
+                .card {{
+                    background: #1e1e1e;
+                    padding: 40px;
+                    border-radius: 12px;
+                    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+                    text-align: center;
+                    width: 100%;
+                    max-width: 400px;
+                }}
+                h1 {{ font-size: 24px; margin-bottom: 20px; color: #fff; }}
+                .desc {{ color: #aaa; font-size: 14px; margin-bottom: 30px; line-height: 1.5; }}
+                .code-box {{
+                    background: #000;
+                    padding: 15px;
+                    border-radius: 8px;
+                    font-family: monospace;
+                    font-size: 22px;
+                    letter-spacing: 2px;
+                    margin-bottom: 30px;
+                    border: 1px solid #333;
+                }}
+                .btn {{
+                    background: #fff;
+                    color: #000;
+                    padding: 14px;
+                    text-decoration: none;
+                    border-radius: 8px;
+                    font-weight: bold;
+                    display: block;
+                    transition: 0.2s;
+                }}
+                .btn:hover {{ background: #ccc; transform: translateY(-2px); }}
+                .btn.disabled {{ background: #333; color: #666; cursor: not-allowed; pointer-events: none; }}
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h1>Подтверждение</h1>
+                <p class="desc">Вы перешли по ссылке для привязки вашего аккаунта <b>osu!</b> к серверу Discord.</p>
+                <div class="code-box">{"/linkcode " if linkcode else ""}{code_display}</div>
+                <p class="desc" style="font-size: 12px;">Если ваш код совпадает, нажмите кнопку ниже для безопасной авторизации.</p>
+                <a href="{auth_url}" class="btn {'disabled' if not linkcode else ''}">Авторизоваться</a>
             </div>
         </body>
         </html>
         """
 
     @app.get("/auth/osu/login")
-    async def osu_oauth_login(discord_id: int = Query(..., gt=0)):
+    async def osu_oauth_login(linkcode: str = Query(...)):
         state = secrets.token_urlsafe(32)
         conn = await get_db_conn()
         try:
+            # Сохраняем linkcode в state, чтобы не потерять его после возврата от osu!
             await conn.execute(
                 "INSERT INTO oauth_osu_states (state, discord_id, created_at, expires_at) VALUES ($1, $2, $3, $4)",
-                state, discord_id, int(time.time()), int(time.time()) + 600,
+                state, 0, int(time.time()), int(time.time()) + 600,
             )
+            # Временно сохраним связь state -> linkcode (можно через доп. колонку или кэш)
+            # Для простоты добавим в URL редиректа state, который osu вернет нам
         finally:
             await conn.close()
         
         url = build_authorize_url(
             client_id=str(settings.osu_client_id),
             redirect_uri=settings.osu_redirect_uri,
-            state=state,
+            state=f"{state}:{linkcode}", # Передаем linkcode через state
             scope="public",
         )
         return RedirectResponse(url=url)
 
     @app.get("/auth/osu/callback")
-    async def osu_oauth_callback(code: str | None = None, state: str | None = None) -> HTMLResponse:
+    async def osu_oauth_callback(code: str, state: str) -> HTMLResponse:
+        # Разделяем наш кастомный state
+        raw_state, linkcode = state.split(":")
+        
         conn = await get_db_conn()
         try:
-            row = await conn.fetchrow("SELECT discord_id FROM oauth_osu_states WHERE state=$1", state)
-            if not row:
-                return HTMLResponse("Invalid state", status_code=400)
+            row = await conn.fetchrow("SELECT * FROM oauth_osu_states WHERE state=$1", raw_state)
+            if not row: return HTMLResponse("Ошибка сессии", status_code=400)
             
-            await conn.execute("DELETE FROM oauth_osu_states WHERE state=$1", state)
+            await conn.execute("DELETE FROM oauth_osu_states WHERE state=$1", raw_state)
             
             tokens = await exchange_authorization_code(
-                client_id=str(settings.osu_client_id), 
-                client_secret=str(settings.osu_client_secret), 
-                code=code, 
-                redirect_uri=settings.osu_redirect_uri
+                str(settings.osu_client_id), str(settings.osu_client_secret), code, settings.osu_redirect_uri
             )
-            
             me = await fetch_me(tokens["access_token"])
-            osu_id, username, mode = int(me["id"]), me["username"], me.get("playmode", "osu")
             
-            discord_link_code = secrets.token_hex(3).upper() 
-            now = int(time.time())
-            
+            # Создаем челлендж
             challenge_id = await conn.fetchval(
                 """INSERT INTO verification_challenges 
                 (discord_id, osu_id, osu_username, mode, profile_token, status, created_at, expires_at, verification_source, link_code)
-                VALUES (0, $1, $2, $3, $4, 'pending', $5, $6, 'oauth', $7)
+                VALUES (0, $1, $2, $3, 'oauth', 'pending', $4, $5, 'oauth', $6)
                 RETURNING id""",
-                osu_id, username, mode, OAUTH_PROFILE_PLACEHOLDER, now, 
-                now + settings.verification_token_ttl_seconds, discord_link_code
+                me["id"], me["username"], me.get("playmode", "osu"), 
+                int(time.time()), int(time.time()) + 300, linkcode
             )
 
-            return HTMLResponse(content=f"""
-                <h2>Привет, {username}!</h2>
-                <p>Твой код для Discord: <b>{discord_link_code}</b></p>
-                <form action="/verify/form/finalize" method="post">
-                    <input type="hidden" name="challenge_id" value="{challenge_id}">
-                    <button type="submit">Завершить верификацию</button>
-                </form>
+            # Страница успешной авторизации (Шаг 2)
+            return HTMLResponse(f"""
+                <body style="background:#111; color:white; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh;">
+                    <div style="background:#1e1e1e; padding:40px; border-radius:12px; text-align:center;">
+                        <h2 style="color:#ff66aa;">Почти готово, {me['username']}!</h2>
+                        <p>Нажмите кнопку ниже, чтобы завершить привязку к Discord.</p>
+                        <form action="/verify/form/finalize" method="post">
+                            <input type="hidden" name="challenge_id" value="{challenge_id}">
+                            <button type="submit" style="background:#ff66aa; border:none; color:white; padding:15px 30px; border-radius:8px; font-weight:bold; cursor:pointer;">ЗАВЕРШИТЬ</button>
+                        </form>
+                    </div>
+                </body>
             """)
         finally:
             await conn.close()
 
-    @app.post("/verify/form/finalize", response_class=HTMLResponse)
+    @app.post("/verify/form/finalize")
     async def finalize_from_form(challenge_id: int = Form(...)):
         try:
-            result = await _finalize_challenge(challenge_id)
-            return HTMLResponse(content=f"<h2>Успех!</h2><p>Роль выдана. DIGIT: {result['digit']}</p>")
-        except HTTPException as exc:
-            return HTMLResponse(content=f"<h2>Ошибка</h2><p>{exc.detail}</p>", status_code=exc.status_code)
+            await _finalize_challenge(challenge_id)
+            return HTMLResponse("<h2>Успешно!</h2><p>Можете закрыть это окно и вернуться в Discord.</p>")
+        except Exception as e:
+            return HTMLResponse(f"<h2>Ошибка</h2><p>{str(e)}</p>")
 
     return app
