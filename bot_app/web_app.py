@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: dict[str, dict[int, int]]) -> FastAPI:
     app = FastAPI()
 
-    # Обычная строка (БЕЗ f в начале), чтобы не было конфликта с фигурные скобками CSS
+    # Шаблон главной страницы
     HTML_TEMPLATE = """
     <!DOCTYPE html>
     <html lang="ru">
@@ -160,32 +160,122 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
     </html>
     """
 
-    # ГЛАВНАЯ СТРАНИЦА (Роут был пропущен, добавляем)
+    # Шаблон страницы успешной верификации
+    SUCCESS_TEMPLATE = """
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <title>Успешная верификация</title>
+        <style>
+            body {
+                margin: 0; padding: 0;
+                display: flex; justify-content: center; align-items: center;
+                min-height: 100vh;
+                color: white; font-family: 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #000 0%, #151515 100%);
+            }
+            .container {
+                text-align: center;
+                background: #111;
+                padding: 60px;
+                border-radius: 24px;
+                border: 1px solid #222;
+                box-shadow: 0 30px 70px rgba(0,0,0,0.9);
+                max-width: 500px;
+            }
+            .icon {
+                font-size: 80px;
+                color: #4ade80;
+                margin-bottom: 20px;
+            }
+            .logo { 
+                font-size: 48px; 
+                font-weight: 900; 
+                font-style: italic; 
+                margin-bottom: 10px; 
+                color: #fff;
+            }
+            h1 { font-size: 24px; margin-bottom: 15px; }
+            p { color: #888; line-height: 1.6; margin-bottom: 30px; }
+            .btn {
+                display: inline-block;
+                padding: 15px 40px;
+                background: #fff;
+                color: #000;
+                text-decoration: none;
+                border-radius: 10px;
+                font-weight: 800;
+                text-transform: uppercase;
+                transition: 0.3s;
+            }
+            .btn:hover { transform: translateY(-3px); filter: brightness(1.1); }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="icon">✓</div>
+            <div class="logo">VERIFIED</div>
+            <h1>Аккаунт успешно привязан!</h1>
+            <p>Ваш профиль osu! успешно соединен с Discord. Роли будут выданы автоматически в течение нескольких минут.</p>
+            <a href="https://discord.com/app" class="btn">Вернуться в Discord</a>
+        </div>
+    </body>
+    </html>
+    """
+
     @app.get("/", response_class=HTMLResponse)
     async def index(discord_id: str | None = Query(default=None)):
         pref = discord_id if discord_id else ""
         return HTML_TEMPLATE.replace("{{DISCORD_ID}}", pref)
 
-    # Маршрут для Способа 1 (кнопка "Войти через osu!")
-    @app.get("/auth/osu/login")
-    async def osu_login(discord_id: str):
-        state = f"discord:{discord_id}" 
-        url = build_authorize_url(
-    client_id=settings.osu_client_id, 
-    redirect_uri=settings.osu_redirect_uri, 
-    state=state
-)
-        return RedirectResponse(url)
-
-    # Маршрут, куда osu! возвращает пользователя (Redirect URI)
-    @app.get("/auth/osu/callback")
+    @app.get("/auth/osu/callback", response_class=HTMLResponse)
     async def osu_callback(code: str, state: str):
-        # Здесь должна быть логика обмена кода на токен (exchange_authorization_code)
-        return {"status": "success", "message": "Проверьте свои роли в Discord!"}
+        # 1. Извлекаем discord_id из параметра state
+        if not state.startswith("discord:"):
+            raise HTTPException(status_code=400, detail="Invalid state parameter")
+        
+        discord_id = state.split(":")[1]
 
-    # Маршрут для Способа 2 (кнопка "Дальше (Классика)")
-    @app.post("/verify/classic/start")
-    async def classic_verify(discord_id: str = Form(...), osu_identifier: str = Form(...)):
-        return {"message": f"Код для {osu_identifier} сгенерирован (заглушка)"}
+        try:
+            # 2. Обмениваем временный код на access_token
+            token_data = await exchange_authorization_code(
+                client_id=settings.osu_client_id,
+                client_secret=settings.osu_client_secret,
+                code=code,
+                redirect_uri=settings.osu_redirect_uri
+            )
+            
+            access_token = token_data.get("access_token")
+            if not access_token:
+                raise HTTPException(status_code=400, detail="Failed to retrieve access token")
+
+            # 3. Получаем данные о пользователе osu! (id, username)
+            user_data = await fetch_me(access_token)
+            osu_user_id = user_data.get("id")
+            osu_username = user_data.get("username")
+
+            if not osu_user_id:
+                raise HTTPException(status_code=400, detail="Failed to fetch osu! user data")
+
+            # 4. Сохраняем связку в базу данных Supabase
+            async with get_db_conn(settings.supabase_url, settings.supabase_key) as db:
+                # Проверяем, нет ли уже такой привязки, и обновляем или создаем новую
+                await db.table("users").upsert({
+                    "discord_id": discord_id,
+                    "osu_id": str(osu_user_id),
+                    "osu_username": osu_username,
+                    "verified_at": int(time.time())
+                }).execute()
+
+            logger.info(f"Successfully linked Discord {discord_id} with osu! {osu_username} ({osu_user_id})")
+
+            # 5. Возвращаем красивый UI
+            # Можно подставить никнейм в шаблон, если добавить {{USERNAME}} в SUCCESS_TEMPLATE
+            return HTMLResponse(content=SUCCESS_TEMPLATE.replace("<h1>Аккаунт успешно привязан!</h1>", f"<h1>{osu_username}, аккаунт привязан!</h1>"))
+
+        except Exception as e:
+            logger.error(f"Error during osu! callback: {e}")
+            raise HTTPException(status_code=500, detail="Internal Server Error during verification")
 
     return app
