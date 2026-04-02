@@ -455,5 +455,45 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
             status_code=200,
         )
 
+    @app.get("/debug_verify")
+    async def debug_verify(osu_identifier: str):
+        """
+        Debug endpoint: check mode/digit/role resolution without changing DB state.
+        """
+        user = await osu_client.request(f"users/{osu_identifier}")
+        if not user:
+            raise HTTPException(status_code=404, detail="osu user not found")
+        mode = str(user.get("playmode", "osu"))
+        osu_id = int(user["id"])
+        username = str(user["username"])
+        global_rank = (user.get("statistics") or {}).get("global_rank")
+        try:
+            digit = compute_digit_value(
+                VerificationInput(
+                    osu_id=osu_id,
+                    username=username,
+                    global_rank=global_rank,
+                ),
+                settings.verification_mode,
+                digit_modulus=settings.digit_modulus,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"digit compute failed: {exc}") from exc
+
+        mode_map = role_mapping.get(mode, {})
+        role_id = mode_map.get(digit)
+        return {
+            "ok": True,
+            "osu_id": osu_id,
+            "username": username,
+            "mode": mode,
+            "verification_mode": settings.verification_mode,
+            "global_rank": global_rank,
+            "digit": digit,
+            "role_id": role_id,
+            "has_role_mapping_for_mode": bool(mode_map),
+            "available_digits_for_mode": sorted(mode_map.keys()),
+        }
+
     # ГЛАВНОЕ: return app находится ВНЕ функций роутов, но ВНУТРИ create_web_app
     return app
