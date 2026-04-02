@@ -108,11 +108,13 @@ async def init_db():
             "TEXT NOT NULL DEFAULT 'bio'",
         )
         await _ensure_column(conn, "verification_challenges", "link_code", "TEXT")
+        await _ensure_identity_pk(conn, "verification_challenges")
 
         await _ensure_column(conn, "pending_role_assignments", "status", "TEXT NOT NULL DEFAULT 'pending'")
         await _ensure_column(conn, "pending_role_assignments", "error_message", "TEXT")
         await _ensure_column(conn, "pending_role_assignments", "created_at", "BIGINT NOT NULL DEFAULT 0")
         await _ensure_column(conn, "pending_role_assignments", "processed_at", "BIGINT")
+        await _ensure_identity_pk(conn, "pending_role_assignments")
         print("База данных Supabase успешно инициализирована.")
 
 
@@ -130,3 +132,33 @@ async def _ensure_column(conn: asyncpg.Connection, table: str, column: str, spec
     )
     if not exists:
         await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
+
+
+async def _ensure_identity_pk(conn: asyncpg.Connection, table: str) -> None:
+    """
+    Ensure legacy tables have numeric `id` with generated values.
+    Some early schemas were created without `id`, while app code expects it.
+    """
+    has_id = await conn.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = $1 AND column_name = 'id'
+        )
+        """,
+        table,
+    )
+    seq = f"{table}_id_seq"
+    if not has_id:
+        await conn.execute(f"CREATE SEQUENCE IF NOT EXISTS {seq}")
+        await conn.execute(f"ALTER TABLE {table} ADD COLUMN id BIGINT")
+        await conn.execute(f"ALTER TABLE {table} ALTER COLUMN id SET DEFAULT nextval('{seq}')")
+        await conn.execute(f"UPDATE {table} SET id = nextval('{seq}') WHERE id IS NULL")
+    else:
+        await conn.execute(f"CREATE SEQUENCE IF NOT EXISTS {seq}")
+        await conn.execute(f"ALTER TABLE {table} ALTER COLUMN id SET DEFAULT nextval('{seq}')")
+        await conn.execute(f"UPDATE {table} SET id = nextval('{seq}') WHERE id IS NULL")
+
+    # Keep constraints idempotent for repeated deploy starts.
+    await conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {table}_id_uidx ON {table}(id)")
