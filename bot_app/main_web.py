@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI
 
 from .config import load_role_mapping, load_settings
@@ -10,12 +12,17 @@ from .logging_utils import setup_logging
 from .osu_client import OsuClient
 from .web_app import create_web_app
 
+logger = logging.getLogger(__name__)
+
 
 async def build_web_app():
     """Build FastAPI app with configured dependencies."""
     setup_logging()
     settings = load_settings(require_discord=False, require_osu=False, require_webhook=False)
-    await init_db()
+    try:
+        await init_db()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("DB init failed during web startup: %s", exc)
     osu_client = OsuClient(
         settings.osu_client_id, settings.osu_client_secret, cache_ttl=settings.osu_cache_ttl_seconds
     )
@@ -41,7 +48,10 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def _startup() -> None:
-        await init_db()
+        try:
+            await init_db()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("DB init failed during startup: %s", exc)
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
