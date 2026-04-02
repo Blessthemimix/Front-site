@@ -9,13 +9,40 @@ from .osu_client import OsuClient
 from .osu_oauth import build_authorize_url, exchange_authorization_code, fetch_me
 from .db import get_db_conn
 import os
-from supabase import create_client, Client
+import typing
+
+logger = logging.getLogger(__name__)
+
+try:
+    from supabase import create_client, Client  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    # In local dev/tests supabase might be absent. The web app must still import.
+    create_client = None  # type: ignore[assignment]
+    Client = typing.Any  # type: ignore[misc,assignment]
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-logger = logging.getLogger(__name__)
+# IMPORTANT:
+# Supabase keys are optional during dev/preview. On Render a missing/invalid key
+# must not crash the whole web service at import time.
+supabase: Client | None = None
+
+
+def get_supabase() -> Client | None:
+    global supabase
+    if supabase is not None:
+        return supabase
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+    if create_client is None:
+        return None
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception:  # noqa: BLE001
+        logger.warning("Supabase init failed (invalid keys or URL). Continuing without Supabase.")
+        supabase = None
+    return supabase
 
 def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: dict[str, dict[int, int]]) -> FastAPI:
     app = FastAPI()
@@ -282,13 +309,21 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
             if not osu_user_id:
                 raise HTTPException(status_code=400, detail="Could not fetch osu! user info")
 
-            # 4. Сохраняем связку (Используем глобальный клиент supabase)
-            supabase.table("users").upsert({
-                "discord_id": int(discord_id),
-                "osu_id": int(osu_user_id),
-                "osu_username": osu_username,
-                "verified_at": int(time.time())
-            }).execute()
+            # 4. Сохраняем связку (Используем Supabase, если он настроен)
+            sb = get_supabase()
+            if sb is None:
+                return HTMLResponse(
+                    content="<h1>Supabase не настроен</h1><p>Проверьте SUPABASE_URL и SUPABASE_KEY в Render.</p>",
+                    status_code=500,
+                )
+            sb.table("users").upsert(
+                {
+                    "discord_id": int(discord_id),
+                    "osu_id": int(osu_user_id),
+                    "osu_username": osu_username,
+                    "verified_at": int(time.time()),
+                }
+            ).execute()
 
             logger.info(f"Success! Linked Discord:{discord_id} to osu!:{osu_username}")
 

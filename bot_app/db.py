@@ -7,12 +7,6 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Отладка загрузки URL
-if not DATABASE_URL:
-    print("КРИТИЧЕСКАЯ ОШИБКА: Переменная DATABASE_URL не найдена в окружении!")
-else:
-    print(f"DATABASE_URL загружена, начинается на: {DATABASE_URL[:15]}...")
-
 @asynccontextmanager
 async def get_db_conn(url: str = None, key: str = None):
     """
