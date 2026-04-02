@@ -283,13 +283,12 @@ def create_web_app(*, settings: Settings, osu_client: OsuClient, role_mapping: d
                 raise HTTPException(status_code=400, detail="Could not fetch osu! user info")
 
             # 4. Сохраняем связку в базу данных Supabase
-            async with get_db_conn(settings.supabase_url, settings.supabase_key) as db:
-                await db.table("users").upsert({
-                    "discord_id": discord_id,
-                    "osu_id": str(osu_user_id),
-                    "osu_username": osu_username,
-                    "verified_at": int(time.time())
-                }).execute()
+           supabase.table("users").upsert({
+                "discord_id": int(discord_id),
+                "osu_id": int(osu_user_id),
+                "osu_username": osu_username,
+                "verified_at": int(time.time())
+            }).execute()
 
             logger.info(f"Success! Linked Discord:{discord_id} to osu!:{osu_username}")
 
