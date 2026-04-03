@@ -397,16 +397,15 @@ def register_commands(bot: RoleBot) -> None:
 
     # --- РЕКОМЕНДАЦИИ (БЕЗ НОВОЙ ТАБЛИЦЫ) ---
 
-    @bot.tree.command(name="recommend", description="Несколько рекомендаций из вашего топ-100")
+    @bot.tree.command(name="recommend", description="Персональные рекомендации новых карт на основе вашего уровня")
     async def recommend(interaction: discord.Interaction):
-        """Показывает несколько случайных карт из топ-100 игрока через API."""
+        """Рекомендует новые карты из базы данных, которые игрок еще не играл."""
         try:
             await interaction.response.defer(ephemeral=False, thinking=False)
         except discord.NotFound:
-            logger.warning("recommend interaction expired before defer for user_id=%s", interaction.user.id)
             return
         
-        # Берем привязанный ID из твоей таблицы users
+        # 1. Получаем данные игрока
         async with get_db_conn() as db_conn:
             row = await db_conn.fetchrow("SELECT osu_id, osu_username FROM users WHERE discord_id=$1", int(interaction.user.id))
         
@@ -416,109 +415,95 @@ def register_commands(bot: RoleBot) -> None:
             
         osu_id, username = row["osu_id"], row["osu_username"]
         
-        # Запрос в osu! API напрямую (в логах видно, что это работает)
-        scores = await bot.osu_client.request(f"users/{osu_id}/scores/best?limit=100")
-        if not scores:
-            await interaction.followup.send("Не удалось загрузить ваши топ-плеи.")
-            return
+        # 2. Анализируем текущий скилл (Средний SR по Top + Recent)
+        scores = await bot.osu_client.request(f"users/{osu_id}/scores/best?limit=100") or []
+        recent_raw = await bot.osu_client.request(f"users/{osu_id}/scores/recent?limit=50&include_fails=0") or []
 
-        # Исключаем карты, где в топ-скоре Acc > 96%
-        filtered: list[dict[str, Any]] = []
-        for s in scores:
-            acc_pct = _score_accuracy_percent(s)
-            if acc_pct is None or acc_pct <= 96.0:
-                filtered.append(s)
-
-        if not filtered:
-            await interaction.followup.send(
-                "После фильтра (Acc ≤ 96%) не осталось скоров в топ-100. Попробуй позже или смени режим."
-            )
-            return
-
-        # Средний SR по топ-скорам с учётом модов (как в игре), не nomod difficulty_rating
-        # --- УЛУЧШЕННЫЙ АНАЛИЗ SR: Фильтр Daycore + 65% Recent / 35% Top ---
         async def is_valid_score(s: dict[str, Any]) -> bool:
-            """Проверка: Acc <= 96% и исключение Daycore на картах 6*+"""
             acc = _score_accuracy_percent(s)
-            if acc is None or acc > 96.0:
-                return False
-            
-            # Проверяем моды на наличие Daycore (DC)
+            if acc is None or acc > 96.0: return False
             mods = s.get("mods", [])
             has_dc = any(isinstance(m, dict) and m.get("acronym") == "DC" for m in mods)
-            
             if has_dc:
                 bm = s.get("beatmap") or {}
-                nomod_sr = float(bm.get("difficulty_rating") or 0.0)
-                # Если карта изначально 6*+, а пройден с DC — скипаем для статистики
-                if nomod_sr >= 6.0:
-                    return False
+                if float(bm.get("difficulty_rating") or 0.0) >= 6.0: return False
             return True
 
-        # Фильтруем топ-скоры и недавние игры
-        valid_top = [s for s in filtered if await is_valid_score(s)]
-        
-        recent_raw = await bot.osu_client.request(f"users/{osu_id}/scores/recent?limit=50&include_fails=0") or []
+        valid_top = [s for s in scores if await is_valid_score(s)]
         recent_filtered = [s for s in recent_raw if await is_valid_score(s)]
 
-        # Формируем выборку (65% свежих, 35% топа)
-        recent_count = min(20, len(recent_filtered))
-        recent_sample = random.sample(recent_filtered, recent_count) if recent_count > 0 else []
+        # Смешиваем для расчета среднего SR
+        r_sample = random.sample(recent_filtered, min(20, len(recent_filtered)))
+        t_sample = random.sample(valid_top, min(30 - len(r_sample), len(valid_top)))
+        sample_for_avg = r_sample + t_sample
         
-        top_needed = 30 - len(recent_sample)
-        top_count = min(top_needed, len(valid_top))
-        top_sample = random.sample(valid_top, top_count) if top_count > 0 else []
-        
-        sample_for_avg = top_sample + recent_sample
+        # Если играть в "чистое" (с высокой аккураси) нечего, берем последние 20 хоть каких-то игр
+        if not sample_for_avg: sample_for_avg = (recent_raw + scores)[:20]
+
         avg_stars = await asyncio.gather(*[_star_rating_for_score(bot, s) for s in sample_for_avg])
         avg_sr = sum(avg_stars) / len(avg_stars) if avg_stars else 0.0
-        # --------------------------------------------------------
 
-        osu_user = await bot.osu_client.request(f"users/{osu_id}")
-        mode_key = (osu_user or {}).get("playmode") or ""
-        mode_labels = {"osu": "osu!", "taiko": "Taiko", "fruits": "Catch", "mania": "Mania"}
-        mode_display = mode_labels.get(mode_key, mode_key or "—")
+        # 3. Поиск НОВЫХ карт в базе данных
+        played_ids = {int(s['beatmap']['id']) for s in (scores + recent_raw) if s.get('beatmap')}
 
-        picks_count = min(5, len(filtered))
-        picks = random.sample(filtered, picks_count)
-        pick_stars = await asyncio.gather(*[_star_rating_for_score(bot, s) for s in picks])
+        async with get_db_conn() as db_conn:
+            # Достаем случайный пак из базы
+            scraped_rows = await db_conn.fetch("SELECT beatmap_id, pp_max FROM scraped_beatmaps ORDER BY RANDOM() LIMIT 250")
+        
+        picks: list[dict[str, Any]] = []
+        pick_stars: list[float] = []
 
+        for r in scraped_rows:
+            if len(picks) >= 5: break
+            bid = r['beatmap_id']
+            if bid in played_ids: continue
+                
+            bm_data = await bot.osu_client.request(f"beatmaps/{bid}")
+            if not bm_data: continue
+            
+            map_sr = float(bm_data.get("difficulty_rating") or 0.0)
+            pattern = _infer_pattern_label(bm_data)
+            is_ln = "LN" in pattern
+            
+            # Логика фильтрации: В пределах SR или исключение для 6*+ LN
+            in_range = (avg_sr - 1.0) <= map_sr <= (avg_sr + 0.8)
+            ln_bonus = (is_ln and 6.0 <= map_sr <= 7.5)
+
+            if in_range or ln_bonus:
+                picks.append({
+                    "beatmap": bm_data,
+                    "beatmapset": bm_data.get("beatmapset"),
+                    "pp": r['pp_max']
+                })
+                pick_stars.append(map_sr)
+
+        if not picks:
+            await interaction.followup.send(f"Подходящих новых карт не найдено. Наполните базу командой `/scrape_top`.")
+            return
+
+        # 4. Отрисовка результата
         blocks: list[str] = []
-        for idx, (score, play_sr) in enumerate(zip(picks, pick_stars, strict=True), start=1):
-            bm = score.get("beatmap") or {}
-            bset = score.get("beatmapset") or {}
-            title = bset.get("title", "Unknown map")
-            version = bm.get("version", "?")
-            sr = _short_num(play_sr, 2)
-            bpm = _short_num(bm.get("bpm"), 0)
-            pp = _short_num(score.get("pp"), 2)
-            circles = int(bm.get("count_circles") or 0)
-            sliders = int(bm.get("count_sliders") or 0)
-            pattern = _infer_pattern_label(bm, effective_sr=play_sr)
-            url = f"https://osu.ppy.sh/b/{bm.get('id')}" if bm.get("id") else "https://osu.ppy.sh/"
+        for idx, (p, s_stars) in enumerate(zip(picks, pick_stars), start=1):
+            bm = p["beatmap"]
+            bset = p["beatmapset"] or {}
+            pattern = _infer_pattern_label(bm, effective_sr=s_stars)
+            url = f"https://osu.ppy.sh/b/{bm.get('id')}"
             blocks.append(
-                f"**[{idx}] [{title} [{version}]]({url})**\n"
-                f"SR **{sr}★** • (~{pp}PP) • BPM {bpm}\n"
-                f"▶ Objects {_short_num(circles, 0)} • Sliders {_short_num(sliders, 0)}\n"
+                f"**[{idx}] [{bset.get('title')} [{bm.get('version')}]]({url})**\n"
+                f"SR **{s_stars:.2f}★** • (~{p['pp']:.0f}PP) • BPM {_short_num(bm.get('bpm'), 0)}\n"
+                f"▶ Objects {bm.get('count_circles')} • Sliders {bm.get('count_sliders')}\n"
                 f"▶ Pattern *{pattern}*"
             )
 
-        cover = (picks[0].get("beatmapset") or {}).get("covers", {}).get("card@2x") or (picks[0].get("beatmapset") or {}).get("covers", {}).get("cover@2x")
+        cover = (picks[0]["beatmapset"] or {}).get("covers", {}).get("card@2x")
         ambient_color = await _ambient_color_from_image(bot, cover)
-
-        header_lines = [
-            f"**Таргет: {mode_display} | Средний SR ~{_short_num(avg_sr, 2)}★**",
-            "*(Исключены карты с Acc > 96% из топ-скоров)*",
-        ]
-        description = "\n".join(header_lines) + "\n\n" + "\n\n".join(blocks)
 
         embed = discord.Embed(
             title=f"Персональные рекомендации для {username}",
-            description=description,
+            description=f"**Ваш средний SR: {avg_sr:.2f}★**\n*(Исключены сыгранные карты)*\n\n" + "\n\n".join(blocks),
             color=ambient_color,
         )
-        if cover:
-            embed.set_image(url=cover)
+        if cover: embed.set_image(url=cover)
 
         await interaction.followup.send(embed=embed)
 
@@ -633,10 +618,24 @@ def register_commands(bot: RoleBot) -> None:
 
         files: list[discord.File] = []
         if unique:
-            buf = StringIO()
-            for bid, data in sorted(unique.items(), key=lambda x: -x[1]["pp_max"]):
-                who = ", ".join(sorted(data["from"]))
-                buf.write(f"{data['title']}\n{data['url']}\n{data['pp_max']:.0f}pp · {who}\n\n")
+            # Открываем соединение с БД
+            async with get_db_conn() as db_conn:
+                buf = StringIO()
+                # Сортируем и проходим по каждой найденной карте
+                for bid, data in sorted(unique.items(), key=lambda x: -x[1]["pp_max"]):
+                    
+                    # --- НОВЫЙ БЛОК: СОХРАНЕНИЕ В БД ---
+                    await db_conn.execute("""
+                        INSERT INTO scraped_beatmaps (beatmap_id, title, pp_max)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (beatmap_id) DO UPDATE SET pp_max = EXCLUDED.pp_max
+                    """, bid, data['title'], data['pp_max'])
+                    # ----------------------------------
+
+                    who = ", ".join(sorted(data["from"]))
+                    buf.write(f"{data['title']}\n{data['url']}\n{data['pp_max']:.0f}pp · {who}\n\n")
+            
+            # Далее идет твой старый код с созданием discord.File...
             files.append(
                 discord.File(
                     fp=BytesIO(buf.getvalue().encode("utf-8")),
