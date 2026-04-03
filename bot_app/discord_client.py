@@ -618,24 +618,30 @@ def register_commands(bot: RoleBot) -> None:
 
         files: list[discord.File] = []
         if unique:
-            # Открываем соединение с БД
+            # 1. Открываем соединение ОДИН раз
             async with get_db_conn() as db_conn:
-                buf = StringIO()
-                # Сортируем и проходим по каждой найденной карте
-                for bid, data in sorted(unique.items(), key=lambda x: -x[1]["pp_max"]):
-                    
-                    # --- НОВЫЙ БЛОК: СОХРАНЕНИЕ В БД ---
-                    await db_conn.execute("""
-                        INSERT INTO scraped_beatmaps (beatmap_id, title, pp_max)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT (beatmap_id) DO UPDATE SET pp_max = EXCLUDED.pp_max
-                    """, bid, data['title'], data['pp_max'])
-                    # ----------------------------------
+                
+                # 2. ПОДГОТОВКА ДАННЫХ: Собираем все карты в один список кортежей
+                to_insert = [
+                    (bid, data['title'], data['pp_max']) 
+                    for bid, data in unique.items()
+                ]
 
+                # 3. МАССОВАЯ ВСТАВКА: Одной командой закидываем всё в базу
+                # Это в десятки раз быстрее и не вызывает таймаутов
+                await db_conn.executemany("""
+                    INSERT INTO scraped_beatmaps (beatmap_id, title, pp_max)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (beatmap_id) DO UPDATE SET pp_max = EXCLUDED.pp_max
+                """, to_insert)
+
+                # 4. ФОРМИРОВАНИЕ ФАЙЛА: Теперь спокойно пишем в буфер для лога
+                buf = StringIO()
+                for bid, data in sorted(unique.items(), key=lambda x: -x[1]["pp_max"]):
                     who = ", ".join(sorted(data["from"]))
                     buf.write(f"{data['title']}\n{data['url']}\n{data['pp_max']:.0f}pp · {who}\n\n")
             
-            # Далее идет твой старый код с созданием discord.File...
+            # Создаем файл для отправки в Discord
             files.append(
                 discord.File(
                     fp=BytesIO(buf.getvalue().encode("utf-8")),
